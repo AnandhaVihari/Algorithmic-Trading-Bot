@@ -1,0 +1,5 @@
+config.py
+*.log
+processed_signals.json
+__pycache__/
+*.pyc
