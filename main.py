@@ -27,13 +27,20 @@ from state import processed_signals
 from config import *
 from slog import slog
 
+# ── autonomous agent modules ───────────────────────────────────────────────────
+from calendar_watcher import should_pause, calendar_summary
+from news_watcher     import news_confirms_direction, news_summary
+from ai_brain         import (get_decision, get_market_mode, is_cache_fresh,
+                               refresh_decisions, ai_decision_summary)
+
 MAGIC_BY_FRAME = {"short": MAGIC_SHORT, "long": MAGIC_LONG}
 
 init_mt5()
 
-CLEANUP_AGE   = timedelta(hours=24)
-mt5_lock      = threading.Lock()
-_cycle_count  = 0   # used to throttle balance.log writes
+CLEANUP_AGE            = timedelta(hours=24)
+mt5_lock               = threading.Lock()
+_cycle_count           = 0   # used to throttle balance.log writes
+_pending_signals_queue = []  # pending signals passed to AI brain thread each cycle
 
 # ── website signal tracker ─────────────────────────────────────────────────────
 # tracks which signals are currently on the website (key = sig_id)
@@ -163,7 +170,7 @@ def run_signal_cycle():
             elif s["status"] == "CLOSE":
                 close_signals.append(s)
 
-        # ── STEP 3: analyse ───────────────────────────────────────────────────
+        # ── STEP 3: analyse + autonomous filters ──────────────────────────────
         to_open  = []
         to_close = []
 
@@ -173,6 +180,9 @@ def run_signal_cycle():
              now.weekday() == 5 or
             (now.weekday() == 6 and now.hour < 21)
         )
+
+        # collect pending signals for AI brain context
+        pending_for_ai = []
 
         for pair, sigs in active_by_pair.items():
 
@@ -189,8 +199,45 @@ def run_signal_cycle():
                 continue
 
             side = list(website_sides.get(pair, {"??"}))[0]
+            # reversal mode: we trade the opposite direction
+            our_direction = ("SELL" if side == "BUY" else "BUY") if REVERSE_SIGNALS else side
 
-            # execute each frame independently — no confluence wait
+            # ── Phase 1: Calendar filter ───────────────────────────────────────
+            if CALENDAR_ENABLED:
+                paused, cal_reason = should_pause(
+                    pair, CALENDAR_PAUSE_MINS, CALENDAR_RESUME_MINS)
+                if paused:
+                    slog(pair, sigs[0]["frame"], "SKIP CALENDAR", cal_reason)
+                    continue
+
+            # ── Phase 2: News sentiment filter ────────────────────────────────
+            if NEWS_ENABLED:
+                news_ok, news_reason = news_confirms_direction(
+                    pair, our_direction, NEWS_SENTIMENT_THRESHOLD)
+                if not news_ok:
+                    slog(pair, sigs[0]["frame"], "SKIP NEWS", news_reason)
+                    continue
+
+            # ── Phase 3: AI brain filter ───────────────────────────────────────
+            if AI_BRAIN_ENABLED and ANTHROPIC_API_KEY:
+                decision = get_decision(pair)
+                action   = decision.get("action", "TAKE")
+                if action == "SKIP":
+                    slog(pair, sigs[0]["frame"], "SKIP AI",
+                         f"AI says SKIP ({decision.get('confidence', 0):.0%}) — {decision.get('reason', '')}")
+                    continue
+                if action == "WAIT":
+                    slog(pair, sigs[0]["frame"], "WAIT AI",
+                         f"AI says WAIT ({decision.get('confidence', 0):.0%}) — {decision.get('reason', '')}")
+                    continue
+                # market-level pause from AI
+                if get_market_mode() == "pause":
+                    slog(pair, sigs[0]["frame"], "SKIP AI", "AI set market_mode=pause")
+                    continue
+
+            pending_for_ai.append({"pair": pair, "direction": our_direction})
+
+            # all filters passed — queue for opening
             for s in sigs:
                 slog(s["pair"], s["frame"], "SIGNAL", f"{side} [{s['frame']}]")
                 to_open.append((s, [s]))
@@ -282,6 +329,18 @@ def run_signal_cycle():
         trades_changed = bool(just_opened or closed_this_cycle)
         account_summary(save=trades_changed or _cycle_count % 10 == 0)
 
+        # every 10 cycles (~11 min) print autonomous agent summaries
+        if _cycle_count % 10 == 0:
+            calendar_summary()
+            news_summary()
+            if AI_BRAIN_ENABLED and ANTHROPIC_API_KEY:
+                ai_decision_summary()
+
+        # feed pending signals to AI brain (non-blocking — brain thread picks it up)
+        if pending_for_ai:
+            _pending_signals_queue.clear()
+            _pending_signals_queue.extend(pending_for_ai)
+
 
 def signal_thread():
     while True:
@@ -317,11 +376,53 @@ def guard_thread():
         time.sleep(GUARD_INTERVAL)
 
 
+# ── AI brain thread (calls Claude API every AI_BRAIN_INTERVAL seconds) ────────
+
+def ai_brain_thread():
+    while True:
+        try:
+            if AI_BRAIN_ENABLED and ANTHROPIC_API_KEY and not is_cache_fresh(AI_BRAIN_INTERVAL):
+                # build open-position summary
+                positions = mt5.positions_get() or []
+                open_pos  = [
+                    {"pair": p.symbol,
+                     "side": "BUY" if p.type == 0 else "SELL",
+                     "pnl":  round(p.profit, 2)}
+                    for p in positions
+                    if p.magic in (MAGIC_SHORT, MAGIC_LONG)
+                ]
+
+                # recent P&L from last 24h of closed bot deals (last 10)
+                deals = mt5.history_deals_get(
+                    datetime.now(timezone.utc) - timedelta(hours=24),
+                    datetime.now(timezone.utc)) or []
+                our   = [d for d in deals
+                         if d.magic in (MAGIC_SHORT, MAGIC_LONG)
+                         and d.entry == mt5.DEAL_ENTRY_OUT][-10:]
+                wins  = [d for d in our if d.profit > 0]
+                recent_pnl = {
+                    "total":      round(sum(d.profit for d in our), 2),
+                    "win_rate":   len(wins) / len(our) * 100 if our else 0,
+                    "open_count": len(open_pos),
+                }
+
+                refresh_decisions(
+                    ANTHROPIC_API_KEY,
+                    list(_pending_signals_queue),
+                    open_pos,
+                    recent_pnl
+                )
+        except Exception as e:
+            print("AI BRAIN THREAD ERROR:", e)
+        time.sleep(30)   # check every 30s, only calls API when cache is stale
+
+
 # ── start ─────────────────────────────────────────────────────────────────────
 
 threading.Thread(target=signal_thread,   daemon=True).start()
 threading.Thread(target=position_thread, daemon=True).start()
 threading.Thread(target=guard_thread,    daemon=True).start()
+threading.Thread(target=ai_brain_thread, daemon=True).start()
 
 # keep main thread alive
 while True:
