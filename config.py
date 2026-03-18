@@ -16,9 +16,6 @@ SIGNAL_INTERVAL = 7   # Check website every 7 seconds
 TRADE_VOLUME = 0.01    # Lot size
 MAX_POSITIONS = 10     # Max concurrent positions
 
-# ─── SAFETY ────────────────────────────────────────────────────────────────
-DOLLAR_STOP_LOSS = 1.50   # Emergency close if loss > $1.50
-
 # ─── MT5 ────────────────────────────────────────────────────────────────────
 
 MT5_LOGIN = 24343206
