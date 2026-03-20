@@ -1,18 +1,37 @@
 from bs4 import BeautifulSoup
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 def parse_time(text):
+    """Parse time from signal row. Handles:
+    1. Absolute format: "2024-01-15 10:30 AM UTC"
+    2. Relative format: "31 mins ago", "9 hours ago", "1 day ago", etc.
+    """
 
+    # Try absolute timestamp first
     match = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} [AP]M UTC", text)
+    if match:
+        t = datetime.strptime(match.group(), "%Y-%m-%d %I:%M %p UTC")
+        return t.replace(tzinfo=timezone.utc)
 
-    if not match:
-        return None
+    # Handle relative times: "31 mins ago", "9 hours ago", "1 day ago", etc.
+    relative_match = re.search(r"(\d+)\s+(min|hour|day)s?\s+ago", text, re.IGNORECASE)
+    if relative_match:
+        amount = int(relative_match.group(1))
+        unit = relative_match.group(2).lower()
+        now = datetime.now(timezone.utc)
 
-    t = datetime.strptime(match.group(), "%Y-%m-%d %I:%M %p UTC")
+        if unit == "min":
+            return now - timedelta(minutes=amount)
+        elif unit == "hour":
+            return now - timedelta(hours=amount)
+        elif unit == "day":
+            return now - timedelta(days=amount)
 
-    return t.replace(tzinfo=timezone.utc)
+    # Fallback: use current time if we can't parse
+    return datetime.now(timezone.utc)
+
 
 
 def _parse_rows(html, frame):
@@ -61,19 +80,25 @@ def _parse_rows(html, frame):
 
 
 def parse_signals(html):
+    """Parse all signals and tag them by timeframe.
 
-    # The page uses two tab divs: class="data_1 tabs_listner" (15/30 min, short)
-    # and class="data_2 tabs_listner" (1/4 hour, long).
-    divider = 'class="data_2 tabs_listner"'
+    Divider: "Given Signals are from 15 minute and 30 minute time frame charts"
+    - Before divider: 15/30 min signals (short frame)
+    - After divider: 1/4 hour signals (long frame)
+    """
+
+    # The exact divider text from the website
+    divider = "Given Signals are from 15 minute and 30 minute time frame charts"
     idx = html.find(divider)
 
     if idx == -1:
-        # fallback: old text divider
+        # Fallback options if exact text not found
         idx = html.lower().find("1/4 hours chart")
-
-    if idx == -1:
-        print("WARN: section divider not found in page, treating all signals as short")
-        return _parse_rows(html, "short")
+        if idx == -1:
+            idx = html.lower().find("1/4 hour")
+            if idx == -1:
+                print("WARN: section divider not found in page, treating all signals as short")
+                return _parse_rows(html, "short")
 
     short_html = html[:idx]
     long_html  = html[idx:]

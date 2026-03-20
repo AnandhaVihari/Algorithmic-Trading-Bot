@@ -33,6 +33,8 @@ def open_trade(signal):
     """
     Open a trade exactly as signal says.
 
+    Returns: (success: bool, ticket: int or None)
+
     signal = {
         'pair': 'EURUSD',
         'side': 'BUY',
@@ -49,23 +51,6 @@ def open_trade(signal):
     tp = signal["tp"]
     sl = signal["sl"]
 
-    # ─── MT5 Duplicate Prevention: Check if position already exists ─────
-    # (main.py filters processed_signals, but we double-check MT5 here)
-    existing = None
-    for name in (pair, pair + "+"):
-        positions = mt5.positions_get(symbol=name)
-        if positions:
-            for pos in positions:
-                if pos.magic == MAGIC_NUMBER:
-                    existing = pos
-                    break
-        if existing:
-            break
-
-    if existing:
-        print(f"  [SKIP] Position already exists for {pair}")
-        return False
-
     # ─── Get symbol ──────────────────────────────────────────────────────
     sym = None
     for name in (pair, pair + "+"):
@@ -79,13 +64,13 @@ def open_trade(signal):
 
     if sym is None:
         print(f"  [SKIP] Symbol {pair} not available")
-        return False
+        return False, None
 
     # ─── Get current price ───────────────────────────────────────────────
     tick = mt5.symbol_info_tick(pair)
     if tick is None:
         print(f"  [SKIP] No tick data for {pair}")
-        return False
+        return False, None
 
     price = tick.ask if side == "BUY" else tick.bid
 
@@ -110,19 +95,27 @@ def open_trade(signal):
     result = mt5.order_send(request)
 
     if result.retcode == 10009:
-        print(f"  [OPENED] {side} {pair} @ {result.price} | SL: {sl} | TP: {tp}")
-        return True
+        actual_price = result.price
+        signal_price = signal["open"]
+        price_diff = abs(actual_price - signal_price)
+
+        if price_diff > 0.0001:
+            print(f"  [OPENED] {side} {pair} → Actual: {actual_price} (Signal: {signal_price}) | SL: {sl} | TP: {tp} | Ticket: {result.order}")
+        else:
+            print(f"  [OPENED] {side} {pair} @ {result.price} | SL: {sl} | TP: {tp} | Ticket: {result.order}")
+        return True, result.order
     elif result.retcode == 10016:
         print(f"  [SKIP] Price moved, invalid stops")
-        return True  # Mark as processed
+        return True, None  # Mark as processed
     else:
         print(f"  [FAILED] Order rejected: {result.retcode}")
-        return False
+        return False, None
 
 
 def close_trade(pair):
     """Close all positions for this pair."""
 
+    closed_count = 0
     for name in (pair, pair + "+"):
         positions = mt5.positions_get(symbol=name)
         if not positions:
@@ -148,8 +141,47 @@ def close_trade(pair):
             result = mt5.order_send(request)
             if result.retcode == 10009:
                 print(f"  [CLOSED] {name} | Profit: ${pos.profit:.2f}")
-                return True
+                closed_count += 1
 
+    return closed_count > 0
+
+
+def close_position_by_ticket(ticket, pair=None):
+    """Close a specific position by ticket number."""
+
+    names = [(pair, pair + "+")] if pair else [(None, None)]
+
+    for name1, name2 in names:
+        for name in (name1, name2):
+            if name is None:
+                continue
+            positions = mt5.positions_get(symbol=name)
+            if not positions:
+                continue
+
+            for pos in positions:
+                if pos.ticket != ticket or pos.magic != MAGIC_NUMBER:
+                    continue
+
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": name,
+                    "volume": pos.volume,
+                    "type": mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY,
+                    "position": ticket,
+                    "deviation": 20,
+                    "magic": MAGIC_NUMBER,
+                    "comment": "close",
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                    "type_time": mt5.ORDER_TIME_GTC
+                }
+
+                result = mt5.order_send(request)
+                if result.retcode == 10009:
+                    print(f"  [CLOSED] Ticket {ticket} @ {pos.price_open} | Profit: ${pos.profit:.2f}")
+                    return True
+
+    print(f"  [WARN] Position ticket {ticket} not found")
     return False
 
 

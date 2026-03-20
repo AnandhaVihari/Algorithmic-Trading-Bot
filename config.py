@@ -10,13 +10,11 @@ PROXY_CACHE_SECONDS = 300
 PROXY_ROTATION_STRATEGY = "round_robin"
 
 # ─── TIMING ────────────────────────────────────────────────────────────────
-SIGNAL_INTERVAL = 7   # Check website every 7 seconds
+SIGNAL_INTERVAL = 10   # Check website every 7 seconds
 
 # ─── TRADING ────────────────────────────────────────────────────────────────
 TRADE_VOLUME = 0.01    # Lot size
-MAX_POSITIONS = 10     # Max concurrent positions
-
-# ─── MT5 ────────────────────────────────────────────────────────────────────
+POSITION_PRICE_TOLERANCE = 0.0001  # Price match tolerance for close signals (0.0001 = 1 pip) ────────────────────────────────────────────────────────────────────
 
 MT5_LOGIN = 24446623
 MT5_PASSWORD = "Z2Nf&3eE"
