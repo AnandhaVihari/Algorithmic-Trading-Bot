@@ -200,7 +200,10 @@ def run_signal_cycle():
 
     signals = parse_signals(html)
     if not signals:
+        print(f"[{now.strftime('%H:%M:%S')}] DEBUG: No signals parsed from HTML")
         return
+
+    print(f"[{now.strftime('%H:%M:%S')}] DEBUG: Parsed {len(signals)} total signals")
 
     # ──── SORT & DEDUPLICATE: Most recent signal only per pair+frame ─────────
 
@@ -215,16 +218,28 @@ def run_signal_cycle():
             filtered_signals.append(s)
 
     signals = filtered_signals
+    print(f"[{now.strftime('%H:%M:%S')}] DEBUG: After dedup: {len(signals)} signals")
+    for s in signals[:5]:  # Show first 5
+        print(f"  - {s['pair']} {s['side']} @ {s['open']} (frame: {s['frame']}, age: {(now - s['time']).total_seconds():.0f}s)")
 
     # ──── FILTER BY AGE: Skip signals older than MAX_SIGNAL_AGE ──────────────
 
     age_filtered = []
+    skipped_age = []
     for s in signals:
         signal_age = (now - s['time']).total_seconds()
         if signal_age <= MAX_SIGNAL_AGE:
             age_filtered.append(s)
+        else:
+            skipped_age.append((s, signal_age))
+
+    if skipped_age:
+        print(f"[{now.strftime('%H:%M:%S')}] DEBUG: Skipped {len(skipped_age)} signals older than 30min:")
+        for s, age in skipped_age[:3]:
+            print(f"  - {s['pair']} {s['side']} age: {age/60:.1f}min")
 
     signals = age_filtered
+    print(f"[{now.strftime('%H:%M:%S')}] DEBUG: After age filter: {len(signals)} signals ready to process")
 
     # ──── PROCESS ACTIVE SIGNALS (with frame lock for dedup) ────────────────
 
