@@ -82,18 +82,37 @@ class _PositionTracker:
         """Get position metadata by signal_id."""
         return self._data.get(signal_id)
 
-    def find_matching_position(self, pair, frame):
-        """Find most recent position opened from same pair+frame."""
+    def find_matching_position(self, pair, frame, close_price=None):
+        """Find position by pair+frame.
+
+        When multiple positions exist on same pair+frame:
+        - Match by close_price if provided (closest price)
+        - Otherwise return oldest position (FIFO - closes in order opened)
+
+        This ensures: close signals match the intended opening signal.
+        """
         matches = []
         for signal_id, metadata in self._data.items():
             if metadata["pair"] != pair or metadata["frame"] != frame:
                 continue
             matches.append((signal_id, metadata))
 
-        # Return the most recent (last added)
-        if matches:
-            return matches[-1]  # Most recent position
-        return None, None
+        if not matches:
+            return None, None
+
+        # If multiple matches and close price given, find closest matching open price
+        if close_price is not None and len(matches) > 1:
+            best_match = min(matches, key=lambda x: abs(x[1]["open_price"] - close_price))
+            return best_match
+
+        # If single match, return it
+        if len(matches) == 1:
+            return matches[0]
+
+        # Multiple matches, no close price: return OLDEST (FIFO - first to open, first to close)
+        # This ensures positions close in order they were opened
+        oldest = min(matches, key=lambda x: x[1].get('created_at', ''))
+        return oldest
 
     def remove(self, signal_id):
         """Remove position mapping when closed."""

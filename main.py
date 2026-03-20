@@ -250,8 +250,8 @@ def run_signal_cycle():
         if pair in active_frame and active_frame[pair] != frame:
             continue
 
-        # Find the matching open position by pair+frame (most recent)
-        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame)
+        # Find the matching open position by pair+frame (use close price to match if multiple exist)
+        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame, s['open'])
 
         if matching_signal_id and metadata:
             print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s['open']}")
