@@ -73,22 +73,17 @@ class _PositionTracker:
         """Get position metadata by signal_id."""
         return self._data.get(signal_id)
 
-    def find_matching_position(self, pair, frame, open_price, tolerance=None):
-        """Find position opened from same pair+frame with matching price (within tolerance)."""
-        # Use default if not provided
-        if tolerance is None:
-            try:
-                from config import POSITION_PRICE_TOLERANCE
-                tolerance = POSITION_PRICE_TOLERANCE
-            except:
-                tolerance = 0.0001
-
+    def find_matching_position(self, pair, frame):
+        """Find most recent position opened from same pair+frame."""
+        matches = []
         for signal_id, metadata in self._data.items():
             if metadata["pair"] != pair or metadata["frame"] != frame:
                 continue
-            # Price match: within tolerance
-            if abs(metadata["open_price"] - open_price) < tolerance:
-                return signal_id, metadata
+            matches.append((signal_id, metadata))
+
+        # Return the most recent (last added)
+        if matches:
+            return matches[-1]  # Most recent position
         return None, None
 
     def remove(self, signal_id):

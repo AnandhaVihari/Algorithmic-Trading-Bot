@@ -14,9 +14,8 @@ SIGNAL_INTERVAL = 10   # Check website every 7 seconds
 
 # ─── TRADING ────────────────────────────────────────────────────────────────
 TRADE_VOLUME = 0.01    # Lot size
-POSITION_PRICE_TOLERANCE = 0.0001  # Price match tolerance for close signals (0.0001 = 1 pip) ────────────────────────────────────────────────────────────────────
 
 MT5_LOGIN = 24446623
 MT5_PASSWORD = "Z2Nf&3eE"
 MT5_SERVER = "VantageInternational-Demo"
-MT5_EXE    = r"C:\Program Files\MetaTrader 5\terminal64.exe" 
+MT5_EXE    = r"D:\MT5s\MetaTrader 5\terminal64.exe" 

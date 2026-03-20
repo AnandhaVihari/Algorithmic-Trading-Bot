@@ -163,7 +163,7 @@ def run_signal_cycle():
     2. Parse all signals
     3. Sort by timestamp DESC, deduplicate per pair+frame (keep most recent only)
     4. Process ACTIVE signals (with frame lock + MT5 duplicate check)
-    5. Process CLOSE signals (frame-matched only)
+    5. Process CLOSE signals (frame-matched, closes most recent position on pair+frame)
     6. Log status + sleep
     """
 
@@ -250,8 +250,8 @@ def run_signal_cycle():
         if pair in active_frame and active_frame[pair] != frame:
             continue
 
-        # Find the matching open position by pair+frame+price
-        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame, s['open'])
+        # Find the matching open position by pair+frame (most recent)
+        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame)
 
         if matching_signal_id and metadata:
             print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s['open']}")
