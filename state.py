@@ -56,7 +56,7 @@ class _PositionTracker:
         with open(_POSITIONS_FILE, "w") as f:
             json.dump(self._data, f)
 
-    def add(self, signal_id, ticket, pair, frame, open_price, side, signal_time=None):
+    def add(self, signal_id, ticket, pair, frame, open_price, side, signal_time=None, tp=None, sl=None):
         """Store mapping: signal_id → position metadata."""
         # Handle signal_time as string or datetime
         if signal_time:
@@ -74,6 +74,8 @@ class _PositionTracker:
             "open_price": open_price,
             "side": side,
             "signal_time": time_str,
+            "tp": tp,
+            "sl": sl,
             "created_at": datetime.now(timezone.utc).isoformat()  # When we opened it
         }
         self._save()
@@ -82,14 +84,14 @@ class _PositionTracker:
         """Get position metadata by signal_id."""
         return self._data.get(signal_id)
 
-    def find_matching_position(self, pair, frame, close_price=None):
+    def find_matching_position(self, pair, frame, tp=None, sl=None):
         """Find position by pair+frame.
 
-        When multiple positions exist on same pair+frame:
-        - Match by close_price if provided (closest price)
-        - Otherwise return oldest position (FIFO - closes in order opened)
+        Matching strategy (in order of priority):
+        1. If TP and SL provided, match by exact TP/SL values (most reliable)
+        2. Otherwise return oldest position (FIFO - first to open, first to close)
 
-        This ensures: close signals match the intended opening signal.
+        TP/SL matching is the key - they uniquely identify each trade!
         """
         matches = []
         for signal_id, metadata in self._data.items():
@@ -100,17 +102,19 @@ class _PositionTracker:
         if not matches:
             return None, None
 
-        # If multiple matches and close price given, find closest matching open price
-        if close_price is not None and len(matches) > 1:
-            best_match = min(matches, key=lambda x: abs(x[1]["open_price"] - close_price))
-            return best_match
-
         # If single match, return it
         if len(matches) == 1:
             return matches[0]
 
-        # Multiple matches, no close price: return OLDEST (FIFO - first to open, first to close)
-        # This ensures positions close in order they were opened
+        # If multiple matches and TP/SL provided, match by TP/SL values
+        if tp is not None and sl is not None and len(matches) > 1:
+            for signal_id, metadata in matches:
+                # Check if TP and SL match (they should be stored if available)
+                if (metadata.get('tp') == tp and metadata.get('sl') == sl):
+                    return signal_id, metadata
+            # If no exact TP/SL match, fall through to FIFO
+
+        # Multiple matches, no TP/SL: return OLDEST (FIFO)
         oldest = min(matches, key=lambda x: x[1].get('created_at', ''))
         return oldest
 

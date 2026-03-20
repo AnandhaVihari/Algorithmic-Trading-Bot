@@ -225,7 +225,7 @@ def run_signal_cycle():
             print(f"  → OPENED ✓ Ticket: {ticket} (Signal ID: {signal_id})")
             # Track position if ticket was obtained
             if ticket:
-                position_tracker.add(signal_id, ticket, pair, frame, s['open'], s['side'], s['time'])
+                position_tracker.add(signal_id, ticket, pair, frame, s['open'], s['side'], s['time'], tp=s['tp'], sl=s['sl'])
 
         processed_signals[signal_id] = now
 
@@ -251,13 +251,15 @@ def run_signal_cycle():
         if pair in active_frame and active_frame[pair] != frame:
             continue
 
-        # Find the matching open position by pair+frame (use close price to match if multiple exist)
-        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame, s['open'])
+        # Find the matching open position by pair+frame
+        # Key: match by TP and SL values (they uniquely identify each trade!)
+        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame, tp=s.get('tp'), sl=s.get('sl'))
 
         if matching_signal_id and metadata:
-            print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s['open']} [Frame: {frame}]")
+            print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s['open']} [Frame: {frame}] TP:{s.get('tp')} SL:{s.get('sl')}")
             print(f"  ✓ Matched to signal ID: {matching_signal_id}")
             print(f"    Signal time: {metadata.get('signal_time', 'unknown')} | Original price: {metadata['open_price']} | Side: {metadata['side']}")
+            print(f"    TP match: {metadata.get('tp')} | SL match: {metadata.get('sl')}")
             print(f"    Ticket: {metadata['ticket']}")
 
             if close_position_by_ticket(metadata["ticket"], pair):
