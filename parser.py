@@ -58,14 +58,18 @@ def _parse_rows(html, frame):
         if not open_price or not tp or not sl:
             continue
 
-        # Check if this trade already has a close price
-        # Trades with close prices are already closed by website - skip them
-        if "Close:" in text:
-            # Already closed, don't process
-            continue
+        # Check if this trade has a close price (is closed)
+        close_price_match = re.search(r"Close:\s*([\d\.]+)", text)
 
-        # Only ACTIVE signals (no close price yet)
-        status = "ACTIVE"
+        if close_price_match:
+            # This is a CLOSE signal - extract it
+            status = "CLOSE"
+            close_price = float(close_price_match.group(1))
+        else:
+            # This is an ACTIVE signal with no close yet
+            status = "ACTIVE"
+            close_price = None
+
         side = "BUY" if "Buy" in text else "SELL"
 
         signals.append({
@@ -77,6 +81,7 @@ def _parse_rows(html, frame):
             "time":   signal_time,
             "status": status,
             "frame":  frame,
+            "close":  close_price,
         })
 
     return signals
