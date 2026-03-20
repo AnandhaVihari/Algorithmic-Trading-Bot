@@ -58,11 +58,14 @@ def _parse_rows(html, frame):
         if not open_price or not tp or not sl:
             continue
 
+        # Check if this trade already has a close price
+        # Trades with close prices are already closed by website - skip them
+        if "Close:" in text:
+            # Already closed, don't process
+            continue
+
+        # Only ACTIVE signals (no close price yet)
         status = "ACTIVE"
-
-        if "Close" in text or "Trailing Stop" in text or "Achieved" in text:
-            status = "CLOSE"
-
         side = "BUY" if "Buy" in text else "SELL"
 
         signals.append({
