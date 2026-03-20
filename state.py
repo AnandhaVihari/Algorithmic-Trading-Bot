@@ -88,14 +88,18 @@ class _PositionTracker:
         """Find position by pair+frame.
 
         Matching strategy:
-        1. If TP and SL provided, match by exact TP/SL values (most reliable)
-           - If found → return it (exact match!)
+        1. If TP and SL provided, match by TP/SL values (allowing small tolerance)
+           - Tolerance needed because MT5 might adjust TP/SL due to min distance rules
+           - Match if: abs(stored_tp - incoming_tp) < tolerance AND abs(stored_sl - incoming_sl) < tolerance
+           - If found → return it (match!)
            - If NOT found → return None (close signal is NOT for our trades)
         2. Otherwise return oldest position (FIFO - first to open, first to close)
 
         KEY: TP/SL matching is definitive. If no match with provided TP/SL,
         the close signal belongs to a different trade (or already closed).
         """
+        TP_SL_TOLERANCE = 0.001  # MT5 might adjust by small amount
+
         matches = []
         for signal_id, metadata in self._data.items():
             if metadata["pair"] != pair or metadata["frame"] != frame:
@@ -109,14 +113,18 @@ class _PositionTracker:
         if len(matches) == 1:
             return matches[0]
 
-        # If multiple matches and TP/SL provided, ONLY match by exact TP/SL values
+        # If multiple matches and TP/SL provided, match by TP/SL values with tolerance
         if tp is not None and sl is not None and len(matches) > 1:
             for signal_id, metadata in matches:
-                # Check if TP and SL match exactly
-                if (metadata.get('tp') == tp and metadata.get('sl') == sl):
+                stored_tp = metadata.get('tp')
+                stored_sl = metadata.get('sl')
+
+                # Check if TP and SL match within tolerance
+                if (stored_tp is not None and stored_sl is not None and
+                    abs(stored_tp - tp) < TP_SL_TOLERANCE and
+                    abs(stored_sl - sl) < TP_SL_TOLERANCE):
                     return signal_id, metadata
-            # If no exact TP/SL match found, return None
-            # This means: "Close signal doesn't belong to any of our open positions"
+            # If no TP/SL match found, return None
             return None, None
 
         # Multiple matches, no TP/SL provided: return OLDEST (FIFO)

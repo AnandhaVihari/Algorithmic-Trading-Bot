@@ -61,20 +61,36 @@ init_mt5()
 
 # Clean up stale position tracking (positions closed via SL/TP but still in tracker)
 def cleanup_stale_positions():
-    """Remove position tracking for tickets that no longer exist in MT5."""
+    """Remove position tracking for tickets that no longer exist in MT5.
+
+    Also unlocks frames for pairs where all positions are gone.
+    """
+    global active_frame
+
     all_mt5_tickets = set()
     for pos in (mt5.positions_get() or []):
         all_mt5_tickets.add(pos.ticket)
 
     stale_count = 0
+    removed_pairs = set()
+
     for signal_id, metadata in list(position_tracker.all_positions()):
         if metadata["ticket"] not in all_mt5_tickets:
-            print(f"[STARTUP] Cleaning up stale position: {signal_id} (ticket {metadata['ticket']} closed via market)")
+            pair = metadata["pair"]
+            print(f"  [STALE] {signal_id} (ticket {metadata['ticket']} closed via TP/SL/market)")
             position_tracker.remove(signal_id)
             stale_count += 1
+            removed_pairs.add(pair)
+
+    # Unlock frames for pairs where all positions are now gone
+    for pair in removed_pairs:
+        remaining = len([m for _, m in position_tracker.all_positions() if m["pair"] == pair])
+        if remaining == 0 and pair in active_frame:
+            print(f"  [UNLOCK] Frame unlocked for {pair} (all positions closed)")
+            del active_frame[pair]
 
     if stale_count > 0:
-        print(f"[STARTUP] Cleaned {stale_count} stale positions from tracker")
+        print(f"[CLEANUP] Removed {stale_count} stale position(s)")
 
 cleanup_stale_positions()
 
@@ -159,16 +175,21 @@ def run_signal_cycle():
     Fetch signals and open/close trades with proper deduplication and frame locking.
 
     Order:
-    1. Fetch HTML via proxy
-    2. Parse all signals
-    3. Sort by timestamp DESC, deduplicate per pair+frame (keep most recent only)
-    4. Process ACTIVE signals (with frame lock + MT5 duplicate check)
-    5. Process CLOSE signals (frame-matched, closes most recent position on pair+frame)
-    6. Log status + sleep
+    1. Clean up stale positions (closed by MT5 via TP/SL)
+    2. Fetch HTML via proxy
+    3. Parse all signals
+    4. Sort by timestamp DESC, deduplicate per pair+frame (keep most recent only)
+    5. Process ACTIVE signals (with frame lock + MT5 duplicate check)
+    6. Process CLOSE signals (frame-matched, closes most recent position on pair+frame)
+    7. Log status + sleep
     """
 
     global active_frame
     now = datetime.now(timezone.utc)
+
+    # ──── CLEAN UP STALE POSITIONS (closed by MT5 via TP/SL) ──────────────────
+
+    cleanup_stale_positions()
 
     # ──── FETCH & PARSE SIGNALS ──────────────────────────────────────────────
 
@@ -298,11 +319,27 @@ def run_signal_cycle():
 
 def signal_thread():
     """Main loop: fetch signals every N seconds."""
+    import MetaTrader5 as mt5
+
     while True:
         try:
+            # Check if MT5 is still connected
+            if not mt5.initialize():
+                print("[ERROR] MT5 disconnected - attempting to reconnect...")
+                try:
+                    init_mt5()
+                    print("[OK] MT5 reconnected")
+                except Exception as e:
+                    print(f"[ERROR] MT5 reconnection failed: {e}")
+                    time.sleep(5)  # Wait before retrying
+                    continue
+
             run_signal_cycle()
+
         except Exception as e:
-            print(f"ERROR: {e}")
+            print(f"[ERROR] Signal cycle failed: {e}")
+            import traceback
+            traceback.print_exc()
 
         time.sleep(SIGNAL_INTERVAL)
 
