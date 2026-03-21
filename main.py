@@ -202,14 +202,14 @@ def run_signal_cycle():
     if not signals:
         return
 
-    # ──── SORT & DEDUPLICATE: Most recent signal only per pair+frame ─────────
+    # ──── SORT & DEDUPLICATE: Most recent signal only per pair+frame+TP+SL ──────
 
     signals.sort(key=lambda x: x['time'], reverse=True)
     seen = set()
     filtered_signals = []
 
     for s in signals:
-        key = f"{s['pair']}_{s['frame']}"
+        key = f"{s['pair']}_{s['frame']}_{s['tp']}_{s['sl']}"
         if key not in seen:
             seen.add(key)
             filtered_signals.append(s)
