@@ -288,6 +288,11 @@ def run_signal_cycle():
                 log(LogLevel.INFO, f"Skipping UNMATCHED ticket {ticket} - unmatched positions never closed")
                 continue
 
+            # CRITICAL SAFETY: Never retry failed positions (already escalated)
+            if key[0] == "_FAILED_CLOSE_":
+                log(LogLevel.INFO, f"Skipping FAILED_CLOSE ticket {ticket} - escalated tickets never retried")
+                continue
+
             # STALE DETECTION: Check if ticket was manually closed in MT5
             if safety.check_stale_tickets(ticket, mt5_positions):
                 positions.remove_ticket(ticket)
