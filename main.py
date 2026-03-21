@@ -1,16 +1,13 @@
 """
-BLIND FOLLOWER BOT - Ultra Simple Version
+BLIND FOLLOWER BOT - State Consistency Architecture
 
-Just fetches signals and opens/closes trades exactly as website says.
-No intelligence, no fancy risk management, no complexity.
+Core objective: Maintain bot state = website state
 
-CORE BEHAVIORS:
-1. Most recent signal only (per pair+frame)
-2. Frame lock (first-come-first-served for signal deduplication)
-3. Multiple positions allowed (per pair)
-4. Proper signal processing order
-5. Frame-matched close only
-6. State file pruning at startup
+Uses Counter-based diffing instead of TP/SL matching:
+  prev_counter - curr_counter = positions to close
+  curr_counter - prev_counter = positions to open
+
+Safety: Only close trades we opened.
 """
 
 import time
@@ -20,6 +17,7 @@ import MetaTrader5 as mt5
 import json
 import os
 from datetime import datetime, timezone, timedelta
+from collections import Counter
 
 # Log to file
 sys.stdout = open("bot.log", "a", buffering=1, encoding="utf-8")
@@ -27,311 +25,277 @@ sys.stderr = sys.stdout
 
 from scraper import fetch_page
 from parser import parse_signals
-from trader import open_trade, close_trade, close_position_by_ticket, get_position, init_mt5, show_open_positions, account_summary
-from state import processed_signals, position_tracker
+from trader import open_trade, close_position_by_ticket, init_mt5, show_open_positions, account_summary
+from signal_manager import (
+    Signal, SignalKey, PositionStore, StateDifferencer, SignalFilter, SafeExecutor
+)
 from config import SIGNAL_INTERVAL, TRADE_VOLUME, MAX_SIGNAL_AGE
 
 print(f"\n{'='*80}")
-print("BLIND FOLLOWER BOT - STARTED")
+print("BLIND FOLLOWER BOT - STATE CONSISTENCY ARCHITECTURE")
 print(f"Signal interval: {SIGNAL_INTERVAL}s | Volume: {TRADE_VOLUME}")
 print(f"{'='*80}\n")
 
-# Prune old signals at startup
-def prune_signals(filepath, hours=24):
-    """Delete processed signals older than N hours."""
-    try:
-        with open(filepath, 'r') as f:
-            data = json.load(f)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        pruned = {
-            k: v for k, v in data.items()
-            if datetime.fromisoformat(v) > cutoff
-        }
-        with open(filepath, 'w') as f:
-            json.dump(pruned, f)
-        removed = len(data) - len(pruned)
-        if removed > 0:
-            print(f"[STARTUP] Pruned {removed} old signals from state (>24h)")
-    except FileNotFoundError:
-        pass
-
-prune_signals('processed_signals.json', hours=24)
-
+# Initialize MT5
 init_mt5()
 
-# Clean up stale position tracking (positions closed via SL/TP but still in tracker)
-def cleanup_stale_positions():
-    """Remove position tracking for tickets that no longer exist in MT5.
+# Persistent position tracker
+positions = PositionStore()
 
-    Also unlocks frames for pairs where all positions are gone.
-    """
-    global active_frame
+# Persistent signal processing tracker (prevent duplicate opens)
+processed_signals_file = "processed_signals.json"
 
-    all_mt5_tickets = set()
-    for pos in (mt5.positions_get() or []):
-        all_mt5_tickets.add(pos.ticket)
 
-    stale_count = 0
-    removed_pairs = set()
+def load_processed_signals():
+    """Load set of already-processed signal timestamps."""
+    try:
+        with open(processed_signals_file, 'r') as f:
+            data = json.load(f)
+        # Keep signals from last 24 hours
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        filtered = {
+            ts: v for ts, v in data.items()
+            if datetime.fromisoformat(v) > cutoff
+        }
+        return set(filtered.keys())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
 
-    for signal_id, metadata in list(position_tracker.all_positions()):
-        if metadata["ticket"] not in all_mt5_tickets:
-            pair = metadata["pair"]
-            print(f"  [STALE] {signal_id} (ticket {metadata['ticket']} closed via TP/SL/market)")
-            position_tracker.remove(signal_id)
-            stale_count += 1
-            removed_pairs.add(pair)
 
-    # Unlock frames for pairs where all positions are now gone
-    for pair in removed_pairs:
-        remaining = len([m for _, m in position_tracker.all_positions() if m["pair"] == pair])
-        if remaining == 0 and pair in active_frame:
-            print(f"  [UNLOCK] Frame unlocked for {pair} (all positions closed)")
-            del active_frame[pair]
+def save_processed_signals(signal_set):
+    """Save processed signal IDs."""
+    data = {sig_id: datetime.now(timezone.utc).isoformat() for sig_id in signal_set}
+    with open(processed_signals_file, 'w') as f:
+        json.dump(data, f)
 
-    if stale_count > 0:
-        print(f"[CLEANUP] Removed {stale_count} stale position(s)")
 
-# Track which frame is active per pair (frame lock)
-active_frame = {}
+def get_signal_id(sig: Signal) -> str:
+    """Create unique signal ID from signal timestamp + key."""
+    key = SignalKey.build(sig.pair, sig.side, sig.tp, sig.sl)
+    time_str = sig.time.isoformat()
+    return f"{time_str}_{key}"
 
-cleanup_stale_positions()
 
-# Log tracked positions at startup
-tracked = position_tracker.all_positions()
-if tracked:
-    print(f"\n[STARTUP] Resuming with {len(tracked)} tracked position(s):")
-    for signal_id, meta in tracked:
-        signal_time_str = meta.get('signal_time', 'unknown')
-        created_str = meta.get('created_at', 'unknown')
-        print(f"  • {meta['pair']} {meta['side']} @ {meta['open_price']} (frame: {meta['frame']})")
-        print(f"    Signal ID: {signal_id}")
-        print(f"    Ticket: {meta['ticket']} | Signal time: {signal_time_str} | Opened at: {created_str}")
-    print()
+# Load processed signals at startup
+processed_signal_ids = load_processed_signals()
+print(f"[STARTUP] Loaded {len(processed_signal_ids)} processed signal IDs (last 24h)")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# DEBUG HELPER FUNCTIONS
-# ──────────────────────────────────────────────────────────────────────────────
+# Load positions from MT5 at startup
+mt5_positions = mt5.positions_get() or []
+print(f"[STARTUP] Found {len(mt5_positions)} positions in MT5")
+for pos in mt5_positions:
+    if pos.magic != 777:  # Not our positions
+        continue
+    # TODO: Reconstruct position tracker from MT5 positions
+    # For now, we start fresh each cycle
 
-def detect_orphaned_positions():
-    """Detect positions in MT5 we don't have in our tracker (shouldn't happen but handle gracefully)."""
-    mt5_positions = mt5.positions_get() or []
-    tracked_tickets = set(meta["ticket"] for _, meta in position_tracker.all_positions())
-
-    orphaned = []
-    for pos in mt5_positions:
-        if pos.magic != 777:  # Not our positions
-            continue
-        if pos.ticket not in tracked_tickets:
-            orphaned.append(pos)
-
-    if orphaned:
-        print(f"\n[WARNING] Found {len(orphaned)} orphaned position(s) in MT5 (not in tracker):")
-        for pos in orphaned:
-            pos_type = "BUY" if pos.type == 0 else "SELL"
-            print(f"  • {pos.symbol} {pos_type} @ {pos.price_open} (ticket: {pos.ticket}) | Profit: ${pos.profit:.2f}")
-        print("  These might be from before the bot started. Manual review recommended.\n")
-
-# Run at startup
-detect_orphaned_positions()
-
-def show_tracked_positions():
-    """Debug: Show all currently tracked positions with full details."""
-    print("\n" + "="*80)
-    print("TRACKED POSITIONS SUMMARY")
-    print("="*80)
-
-    tracked = dict(position_tracker.all_positions())
-    if not tracked:
-        print("No positions currently tracked")
-        print("="*80 + "\n")
-        return
-
-    print(f"Total: {len(tracked)} position(s)\n")
-
-    for signal_id, meta in tracked.items():
-        print(f"Signal ID: {signal_id}")
-        print(f"  Pair:      {meta['pair']}")
-        print(f"  Side:      {meta['side']}")
-        print(f"  Ticket:    {meta['ticket']}")
-        print(f"  Price:     {meta['open_price']}")
-        print(f"  Frame:     {meta['frame']}")
-        print(f"  Signal Time: {meta.get('signal_time', 'unknown')}")
-        print(f"  Opened At:   {meta.get('created_at', 'unknown')}")
-        print()
-
-    print("="*80 + "\n")
-
-# Call at startup to log everything
-show_tracked_positions()
+print()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN SIGNAL LOOP
+# SIGNAL CYCLE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_signal_cycle():
     """
-    Fetch signals and open/close trades with proper deduplication and frame locking.
+    Main signal processing cycle using state consistency logic.
 
-    Order:
-    1. Clean up stale positions (closed by MT5 via TP/SL)
-    2. Fetch HTML via proxy
-    3. Parse all signals
-    4. Sort by timestamp DESC, deduplicate per pair+frame (keep most recent only)
-    5. Process ACTIVE signals (with frame lock + MT5 duplicate check)
-    6. Process CLOSE signals (frame-matched, closes most recent position on pair+frame)
-    7. Log status + sleep
+    1. Fetch website snapshot
+    2. Parse signals
+    3. Build current state (list of keys)
+    4. Compute diff vs previous state
+    5. Close trades (safe)
+    6. Open trades
+    7. Sleep
     """
+    global positions, processed_signal_ids
 
-    global active_frame
     now = datetime.now(timezone.utc)
+    now_str = now.strftime('%H:%M:%S')
 
-    # ──── CLEAN UP STALE POSITIONS (closed by MT5 via TP/SL) ──────────────────
-
-    cleanup_stale_positions()
-
-    # ──── FETCH & PARSE SIGNALS ──────────────────────────────────────────────
+    # ──── FETCH & PARSE ──────────────────────────────────────────────────────
 
     html = fetch_page()
     if html is None:
-        print(f"[{now.strftime('%H:%M:%S')}] WARNING: Could not fetch signals (proxy failed)")
+        print(f"[{now_str}] WARNING: Could not fetch signals (proxy failed)")
         return
 
-    signals = parse_signals(html)
+    try:
+        raw_signals = parse_signals(html)
+    except Exception as e:
+        print(f"[{now_str}] ERROR: Failed to parse signals: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+
+    if not raw_signals:
+        print(f"[{now_str}] No signals found on website")
+        return
+
+    print(f"[{now_str}] Fetched {len(raw_signals)} raw signals")
+
+    # ──── CONVERT TO SIGNAL OBJECTS ──────────────────────────────────────────
+
+    signals = []
+    for raw in raw_signals:
+        try:
+            sig = Signal(
+                pair=raw['pair'],
+                side=raw['side'],
+                open_price=raw['open'],
+                tp=raw['tp'],
+                sl=raw['sl'],
+                time=raw['time'],
+                frame=raw['frame'],
+                status=raw['status'],
+                close_price=raw.get('close'),
+                close_reason=raw.get('close_reason'),
+            )
+            signals.append(sig)
+        except Exception as e:
+            print(f"  [WARN] Skipping malformed signal: {e}")
+            continue
+
     if not signals:
+        print(f"[{now_str}] No valid signals after parsing")
         return
 
-    # ──── SORT & DEDUPLICATE: Most recent signal only per pair+frame+TP+SL ──────
+    # ──── FILTER BY AGE (CRITICAL: CLOSE signals bypass age filter) ──────────
 
-    signals.sort(key=lambda x: x['time'], reverse=True)
-    seen = set()
-    filtered_signals = []
+    active_signals = [s for s in signals if s.status == "ACTIVE"]
+    close_signals = [s for s in signals if s.status == "CLOSE"]
 
-    for s in signals:
-        key = f"{s['pair']}_{s['frame']}_{s['tp']}_{s['sl']}"
-        if key not in seen:
-            seen.add(key)
-            filtered_signals.append(s)
+    print(f"  Active: {len(active_signals)}, Close: {len(close_signals)}")
 
-    signals = filtered_signals
+    # Filter ACTIVE by age, keep ALL CLOSE signals
+    active_signals = SignalFilter.filter_by_age(active_signals, MAX_SIGNAL_AGE)
+    print(f"  After age filter: {len(active_signals)} active (max age: {MAX_SIGNAL_AGE}s)")
 
-    # ──── FILTER BY AGE: Skip signals older than MAX_SIGNAL_AGE ──────────────
+    # ──── DEDUPLICATE: Keep most recent per key ──────────────────────────────
 
-    age_filtered = []
-    for s in signals:
-        signal_age = (now - s['time']).total_seconds()
-        if signal_age <= MAX_SIGNAL_AGE:
-            age_filtered.append(s)
+    # Sort by time DESC so deduplication keeps most recent
+    signals_to_process = sorted(active_signals, key=lambda s: s.time, reverse=True)
 
-    signals = age_filtered
+    signals_to_process = SignalFilter.deduplicate_by_key(signals_to_process)
+    print(f"  After dedup: {len(signals_to_process)} unique active signals")
 
-    # ──── PROCESS ACTIVE SIGNALS (with frame lock for dedup) ────────────────
+    # ──── BUILD CURRENT STATE ────────────────────────────────────────────────
 
-    opened = 0
-    for s in signals:
-        if s["status"] != "ACTIVE":
-            continue
+    # Current keys from website (for state comparison)
+    curr_keys = [
+        SignalKey.build(s.pair, s.side, s.tp, s.sl)
+        for s in signals_to_process
+    ]
 
-        pair = s["pair"]
-        frame = s["frame"]
-        signal_id = f"{pair}_{s['time']}_{s['side']}_{frame}_{s['tp']}_{s['sl']}"
+    # Get previous keys from our tracker
+    prev_keys = list(positions.get_all_keys())
 
-        # Skip if already processed
-        if signal_id in processed_signals:
-            continue
+    print(f"  Previous state: {len(prev_keys)} keys")
+    print(f"  Current state: {len(curr_keys)} keys")
 
-        # Frame lock: if this pair has a different frame active, skip
-        if pair in active_frame and active_frame[pair] != frame:
-            continue
+    # ──── COMPUTE DIFF ───────────────────────────────────────────────────────
 
-        # Open trade
-        signal_time_str = s['time'].strftime('%H:%M:%S') if hasattr(s['time'], 'strftime') else str(s['time'])
-        print(f"[{now.strftime('%H:%M:%S')}] SIGNAL: {pair} {s['side']} @ {s['open']} [Signal time: {signal_time_str}, Frame: {frame}]")
+    closed, opened = StateDifferencer.compute_diff(prev_keys, curr_keys)
 
-        success, ticket = open_trade(s)
-        if success:
-            opened += 1
-            active_frame[pair] = frame  # Lock this frame for this pair
-            print(f"  → OPENED ✓ Ticket: {ticket} (Signal ID: {signal_id})")
-            # Track position if ticket was obtained
-            if ticket:
-                position_tracker.add(signal_id, ticket, pair, frame, s['open'], s['side'], s['time'], tp=s['tp'], sl=s['sl'])
+    if closed or opened:
+        print(f"  Diff: {dict(closed)} closed | {dict(opened)} opened")
+    else:
+        print(f"  No changes")
 
-        processed_signals[signal_id] = now
+    # ──── CLOSE TRADES (SAFE) ────────────────────────────────────────────────
 
-    # ──── PROCESS CLOSE SIGNALS (frame-matched + position-matched) ───────────
+    close_count = 0
+    if closed:
+        print(f"\n[CLOSE] Processing {len(closed)} key(s) to close...")
 
-    closed = 0
-    for s in signals:
-        if s["status"] != "CLOSE":
-            continue
+        ops = SafeExecutor.prepare_close_operations(closed, positions)
+        for key, count, ticket in ops:
+            try:
+                if close_position_by_ticket(ticket, key[0]):
+                    close_count += 1
+                    print(f"  [OK] Closed ticket {ticket} for {key}")
+                else:
+                    print(f"  [ERR] Failed to close ticket {ticket}")
+            except Exception as e:
+                print(f"  [ERR] Exception closing {ticket}: {e}")
 
-        pair = s["pair"]
-        frame = s["frame"]
+    # ──── OPEN TRADES ────────────────────────────────────────────────────────
 
-        # Create unique close signal ID (include TP/SL to differentiate multiple closes)
-        close_signal_id = f"{pair}_{s['time']}_CLOSE_{frame}_{s.get('tp')}_{s.get('sl')}"
+    open_count = 0
+    if opened:
+        print(f"\n[OPEN] Processing {len(opened)} key(s) to open...")
 
-        # Skip if we already processed this exact close signal
-        if close_signal_id in processed_signals:
-            print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s['open']} (already processed, skipping)")
-            continue
+        for key, count in opened.items():
+            pair, side, tp, sl = key
 
-        # Only close if frame matches
-        if pair in active_frame and active_frame[pair] != frame:
-            continue
+            # Find matching signal
+            matching_signals = [
+                s for s in signals_to_process
+                if s.pair == pair and s.side == side
+                and round(s.tp, 3) == round(tp, 3)
+                and round(s.sl, 3) == round(sl, 3)
+            ]
 
-        # Find the matching open position by pair+frame
-        # Key: match by TP and SL values (they uniquely identify each trade!)
-        matching_signal_id, metadata = position_tracker.find_matching_position(pair, frame, tp=s.get('tp'), sl=s.get('sl'))
+            if not matching_signals:
+                print(f"  [SKIP] No signal found for {key}")
+                continue
 
-        if matching_signal_id and metadata:
-            close_reason = s.get('close_reason', 'Unknown')
-            print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s.get('close')} [Frame: {frame}] ({close_reason}) TP:{s.get('tp')} SL:{s.get('sl')}")
-            print(f"  ✓ Matched to signal ID: {matching_signal_id}")
-            print(f"    Signal time: {metadata.get('signal_time', 'unknown')} | Original price: {metadata['open_price']} | Side: {metadata['side']}")
-            print(f"    TP match: {metadata.get('tp')} | SL match: {metadata.get('sl')}")
-            print(f"    Ticket: {metadata['ticket']}")
+            sig = matching_signals[0]  # Use first match
 
-            if close_position_by_ticket(metadata["ticket"], pair):
-                closed += 1
-                position_tracker.remove(matching_signal_id)
-                # Only unlock if no more positions for this pair exist
-                remaining = len([m for sid, m in position_tracker.all_positions() if m["pair"] == pair])
-                if remaining == 0 and pair in active_frame:
-                    del active_frame[pair]  # Unlock pair only if no more positions
-                print(f"  ✓ CLOSED")
+            # Check if already processed recently
+            sig_id = get_signal_id(sig)
+            if sig_id in processed_signal_ids:
+                print(f"  [SKIP] Signal already processed: {sig_id}")
+                continue
 
-        else:
-            # No matching position found
-            close_reason = s.get('close_reason', 'Unknown')
-            print(f"[{now.strftime('%H:%M:%S')}] CLOSE: {pair} @ {s.get('close')} [Frame: {frame}] ({close_reason})")
-            print(f"  ✗ No matching position found!")
-            print(f"  Available tracked positions for {pair}:")
-            found_any = False
-            for sid, meta in position_tracker.all_positions():
-                if meta["pair"] == pair:
-                    found_any = True
-                    print(f"    - Signal: {sid}")
-                    print(f"      Time: {meta.get('signal_time', 'unknown')} | Price: {meta['open_price']} | Frame: {meta['frame']} | Ticket: {meta['ticket']}")
-            if not found_any:
-                print(f"    (None)")
-            # Don't auto-close unmatched - website should provide correct price
+            # Open trades for this key
+            for i in range(count):
+                try:
+                    success, ticket = open_trade({
+                        'pair': sig.pair,
+                        'side': sig.side,
+                        'open': sig.open_price,
+                        'tp': sig.tp,
+                        'sl': sig.sl,
+                        'time': sig.time,
+                        'frame': sig.frame,
+                    })
 
-        # Mark close signal as processed to prevent duplicates
-        processed_signals[close_signal_id] = now
+                    if success and ticket:
+                        positions.add_ticket(key, ticket)
+                        open_count += 1
+                        print(f"  [OK] Opened ticket {ticket} for {key}")
+                        processed_signal_ids.add(sig_id)
+                    else:
+                        print(f"  [ERR] Failed to open trade for {key}")
 
-    # ──── STATUS ──────────────────────────────────────────────────────────────
+                except Exception as e:
+                    print(f"  [ERR] Exception opening {key}: {e}")
 
-    print(f"[{now.strftime('%H:%M:%S')}] Status: {opened} opened, {closed} closed")
+    # ──── SAVE STATE ─────────────────────────────────────────────────────────
+
+    if open_count > 0 or close_count > 0:
+        save_processed_signals(processed_signal_ids)
+
+    # ──── PROCESS CLOSE SIGNALS (Informational) ───────────────────────────────
+
+    if close_signals:
+        print(f"\n[CLOSE_SIGNALS] Found {len(close_signals)} close signal(s) on website")
+        for sig in close_signals:
+            print(f"  {sig.pair} {sig.side} @ close {sig.close_price} ({sig.close_reason})")
+            # These are FYI only - the counter diff already handled closing
+
+    # ──── STATUS ─────────────────────────────────────────────────────────────
+
+    print(f"\n[{now_str}] Cycle complete: {open_count} opened, {close_count} closed")
+    print(f"  Tracked positions: {sum(len(t) for t in positions.positions.values())} tickets")
+
     show_open_positions()
     account_summary()
 
 
 def signal_thread():
     """Main loop: fetch signals every N seconds."""
-    import MetaTrader5 as mt5
 
     while True:
         try:
@@ -343,7 +307,7 @@ def signal_thread():
                     print("[OK] MT5 reconnected")
                 except Exception as e:
                     print(f"[ERROR] MT5 reconnection failed: {e}")
-                    time.sleep(5)  # Wait before retrying
+                    time.sleep(5)
                     continue
 
             run_signal_cycle()
