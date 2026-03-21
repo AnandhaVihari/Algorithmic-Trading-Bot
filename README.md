@@ -712,6 +712,33 @@ Summary: System works for ~90% of normal cases but has critical failure points i
 
 **Use this for:** Understanding limitations, risks, and recommended improvements.
 
+### [OBJECTIVE_REFRAMING.md](OBJECTIVE_REFRAMING.md)
+Fundamental reframing of the bot's actual objective:
+- Exposes that the bot has been solving the WRONG problem
+- Current approach: Try to match exact MT5 tickets (IMPOSSIBLE without unique IDs)
+- Correct approach: Maintain state consistency with website (ACHIEVABLE)
+- Compares TP/SL matching vs Counter + List approaches
+- Concludes: Counter + List is more correct for the actual objective
+
+Key insight: Website provides state snapshots, not transaction logs. Bot should sync state, not guess trades.
+
+**Use this for:** Understanding the fundamental flaw in approach and why Counter + List may be better.
+
+### [COUNTER_LIST_ANALYSIS.md](COUNTER_LIST_ANALYSIS.md)
+Detailed analysis of alternative Counter + List approach:
+- Proposes: positions[key] = [ticket1, ticket2, ...] with counter for each key
+- Tests: Does it guarantee correct trade closes?
+- Findings: Counts correctly but may close wrong tickets
+- Edge cases: Partial closes, out-of-order closes, stale positions, tolerance collisions
+
+7 concrete failure scenarios showing how Counter + List approach breaks in practice.
+
+Comparison: Counter + List (~60% accuracy) vs TP/SL matching (~90%) vs Staleness detection (~95%)
+
+Recommendation: Current TP/SL matching is better than proposed Counter + List, but staleness detection is best.
+
+**Use this for:** Understanding why alternative approaches fail and validating current design.
+
 ---
 
 ## Summary
