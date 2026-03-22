@@ -92,12 +92,34 @@ def _parse_rows(html, frame):
 
         side = "BUY" if "Buy" in text else "SELL"
 
+        open_val = float(open_price.group(1))
+        tp_val = float(tp.group(1))
+        sl_val = float(sl.group(1))
+
+        # VALIDATION: Check SL makes sense
+        if sl_val == open_val:
+            import sys
+            print(f"[WARN] {pair} {side}: SL ({sl_val}) = Entry ({open_val}) - INVALID! Skipping.", file=sys.stderr)
+            continue
+
+        if side == "BUY" and sl_val > open_val:
+            # BUY: SL should be BELOW entry
+            import sys
+            print(f"[WARN] {pair} BUY: SL ({sl_val}) > Entry ({open_val}) - Swapping with TP", file=sys.stderr)
+            sl_val, tp_val = tp_val, sl_val
+
+        if side == "SELL" and sl_val < open_val:
+            # SELL: SL should be ABOVE entry
+            import sys
+            print(f"[WARN] {pair} SELL: SL ({sl_val}) < Entry ({open_val}) - Swapping with TP", file=sys.stderr)
+            sl_val, tp_val = tp_val, sl_val
+
         signals.append({
             "pair":   pair,
             "side":   side,
-            "open":   float(open_price.group(1)),
-            "tp":     float(tp.group(1)),
-            "sl":     float(sl.group(1)),
+            "open":   open_val,
+            "tp":     tp_val,
+            "sl":     sl_val,
             "time":   signal_time,
             "status": status,
             "frame":  frame,
