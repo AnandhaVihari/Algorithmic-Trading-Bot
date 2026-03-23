@@ -125,6 +125,9 @@ def close_trade(pair):
             if pos.magic != MAGIC_NUMBER:
                 continue
 
+            entry_price = pos.price_open
+            ticket = pos.ticket
+
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": name,
@@ -140,7 +143,25 @@ def close_trade(pair):
 
             result = mt5.order_send(request)
             if result.retcode == 10009:
-                print(f"  [CLOSED] {name} | Profit: ${pos.profit:.2f}")
+                # Fetch real close price from deal history
+                close_deal = None
+                try:
+                    deals = mt5.history_deals_get(position=ticket, group="*")
+                    if deals:
+                        for deal in reversed(deals):
+                            if deal.entry == 1:  # Closing deal
+                                close_deal = deal
+                                break
+                except Exception:
+                    pass
+
+                if close_deal:
+                    close_price = close_deal.price
+                    close_profit = close_deal.profit
+                    price_diff = close_price - entry_price
+                    print(f"  [CLOSED] {name} T{ticket} Entry: {entry_price} -> Close: {close_price} | Diff: {price_diff:.6f} | Profit: ${close_profit:.2f}")
+                else:
+                    print(f"  [CLOSED] {name} | Profit: ${pos.profit:.2f}")
                 closed_count += 1
 
     return closed_count > 0
@@ -148,6 +169,26 @@ def close_trade(pair):
 
 def close_position_by_ticket(ticket, pair=None):
     """Close a specific position by ticket number."""
+
+    # ──── EXECUTION TRACE ────
+    import traceback
+    import inspect
+
+    stack = traceback.extract_stack()
+    caller_frame = None
+    caller_function = "UNKNOWN"
+
+    # Find caller (skip this function and decorator frames)
+    for frame in reversed(stack[:-1]):
+        if "close_position_by_ticket" not in frame.name:
+            caller_frame = frame
+            caller_function = frame.name if frame.name else "UNKNOWN"
+            break
+
+    print(f"[TRACE_CLOSE] Ticket {ticket} close initiated")
+    print(f"[TRACE_CLOSE] Caller: {caller_function}() at {caller_frame.filename.split(chr(92))[-1] if caller_frame else 'unknown'}:{caller_frame.lineno if caller_frame else '?'}")
+    if ticket in [1029131995, 1028771560, 1028924631]:  # Known problem tickets
+        print(f"[TRACE_CLOSE] **PROBLEM TICKET DETECTED**")
 
     names = [(pair, pair + "+")] if pair else [(None, None)]
 
@@ -162,6 +203,15 @@ def close_position_by_ticket(ticket, pair=None):
             for pos in positions:
                 if pos.ticket != ticket or pos.magic != MAGIC_NUMBER:
                     continue
+
+                # Store entry details BEFORE close
+                entry_price = pos.price_open
+                entry_time = datetime.now(timezone.utc)
+
+                # Get tick info before close
+                tick = mt5.symbol_info_tick(name)
+                bid_before = tick.bid if tick else 0
+                ask_before = tick.ask if tick else 0
 
                 request = {
                     "action": mt5.TRADE_ACTION_DEAL,
@@ -178,7 +228,55 @@ def close_position_by_ticket(ticket, pair=None):
 
                 result = mt5.order_send(request)
                 if result.retcode == 10009:
-                    print(f"  [CLOSED] Ticket {ticket} @ {pos.price_open} | Profit: ${pos.profit:.2f}")
+                    # Close succeeded - fetch real close price from deal history
+                    close_deal = None
+                    try:
+                        # Get deals for this position (most recent deals)
+                        deals = mt5.history_deals_get(position=ticket, group="*")
+                        if deals:
+                            # Find the CLOSING deal (should be most recent)
+                            for deal in reversed(deals):
+                                # Deal type: DEAL_TYPE_BUY=0, DEAL_TYPE_SELL=1
+                                # Deal entry: DEAL_ENTRY_IN=0, DEAL_ENTRY_OUT=1
+                                if deal.entry == 1:  # CLOSING deal
+                                    close_deal = deal
+                                    break
+                    except Exception as e:
+                        print(f"    [DEBUG] Deal history error: {e}")
+
+                    if close_deal:
+                        close_price = close_deal.price
+                        close_profit = close_deal.profit
+                        price_diff = close_price - entry_price
+
+                        # Detect if close at entry or real movement
+                        if abs(price_diff) < 0.00001 and close_profit != 0:
+                            warning = " [WARNING: Close at entry but non-zero profit - likely friction only]"
+                        else:
+                            warning = ""
+
+                        print(f"  [CLOSED] T{ticket} Entry: {entry_price} -> Close: {close_price} | Movement: {price_diff:.6f} pips | Profit: ${close_profit:.2f}{warning}")
+
+                        # ─── CLOSE CORRELATION TRACE ─────────────────────────────────────
+                        # Log close details for correlation with trailing stop moves
+                        close_reason = caller_function if caller_function != "UNKNOWN" else "UNKNOWN"
+                        print(f"[CLOSE_TRACE] T{ticket} | reason={close_reason} | close={close_price:.5f} | sl={pos.sl:.5f} | tp={pos.tp:.5f} | entry={entry_price:.5f} | profit=${close_profit:.2f}")
+                    else:
+                        # Fallback if deal history unavailable
+                        print(f"  [CLOSED] T{ticket} (deal history unavailable) | Entry: {entry_price} | Profit: ${pos.profit:.2f}")
+
+                        # ─── CLOSE CORRELATION TRACE (FALLBACK) ─────────────────────────────────
+                        close_reason = caller_function if caller_function != "UNKNOWN" else "UNKNOWN"
+                        print(f"[CLOSE_TRACE] T{ticket} | reason={close_reason} | close=UNKNOWN | sl={pos.sl:.5f} | tp={pos.tp:.5f} | entry={entry_price:.5f} | profit=${pos.profit:.2f}")
+
+                    # Verify position actually closed in MT5
+                    time.sleep(0.5)  # Wait for MT5 to update
+                    remaining = mt5.positions_get(ticket=ticket)
+                    if remaining:
+                        print(f"    [ERROR] Position T{ticket} still exists in MT5 after close!")
+                    else:
+                        print(f"    [OK] Position T{ticket} fully closed in MT5")
+
                     return True
 
     print(f"  [WARN] Position ticket {ticket} not found")

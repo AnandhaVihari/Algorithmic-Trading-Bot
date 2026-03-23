@@ -31,6 +31,7 @@ from signal_manager import (
 )
 from operational_safety import OperationalSafety, log, LogLevel
 from virtual_sl import init_virtual_sl, get_virtual_sl_manager
+from trailing_stop import init_trailing_stop
 from config import SIGNAL_INTERVAL, TRADE_VOLUME, MAX_SIGNAL_AGE
 
 print(f"\n{'='*80}")
@@ -48,7 +49,13 @@ positions = PositionStore()
 safety = OperationalSafety(max_retries=5, unmatched_threshold=3)
 
 # Virtual SL - Spread-aware stop loss management
-virtual_sl = init_virtual_sl(spread_factor=1.5)
+# spread_factor: 1.5-2.0 (higher = more protection from spread spikes)
+# cooldown_seconds: 300 (5 min cooldown to prevent reopen loop after VSL close)
+virtual_sl = init_virtual_sl(spread_factor=1.5, cooldown_seconds=300)
+
+# Trailing Stop - Phase-based SL management (passive layer)
+trailing_stop_mgr = init_trailing_stop()
+print("[TRAIL] Initialized trailing stop manager")
 
 # Persistent signal processing tracker (prevent duplicate opens)
 processed_signals_file = "processed_signals.json"
@@ -233,6 +240,10 @@ def run_signal_cycle():
         print(f"[{now_str}] No valid signals after parsing")
         return
 
+    # ──── SIGNAL STABILITY LOGGING: Raw signal list every cycle ────────────────
+    raw_signal_list = [(s.pair, s.side) for s in signals if s.status == "ACTIVE"]
+    print(f"  [RAW_SIGNALS] Cycle signals (ACTIVE only): {raw_signal_list}")
+
     # ──── FILTER BY AGE (CRITICAL: CLOSE signals bypass age filter) ──────────
 
     active_signals = [s for s in signals if s.status == "ACTIVE"]
@@ -270,30 +281,117 @@ def run_signal_cycle():
         for s in signals_to_manage
     ]
 
+    # ──── KEY PRECISION VERIFICATION: Log signal values for cross-cycle comparison ──
+    # This catches any precision issues that could cause keys to change between cycles
+    if signals_to_manage:
+        print(f"\n  [KEY_PRECISION] Signals_to_manage ({len(signals_to_manage)}):")
+        for s in signals_to_manage[:5]:  # Log first 5
+            key = SignalKey.build(s.pair, s.side, s.tp, s.sl)
+            print(f"    {s.pair:7s} {s.side:4s} | TP={s.tp:.10f} SL={s.sl:.10f} | KEY={key}")
+
     # Get previous keys from our tracker
     prev_keys = list(positions.get_all_keys())
 
     print(f"  Previous state: {len(prev_keys)} keys")
     print(f"  Current state: {len(curr_keys)} keys")
 
+    # ──── RUNTIME VERIFICATION: Prove curr_keys is from ALL active, not fresh ────
+    print(f"  [VERIFY] Raw active signals: {len(active_signals)}")
+    print(f"  [VERIFY] Fresh signals only: {len(fresh_signals)}")
+    print(f"  [VERIFY] Signals_to_manage (deduped all active): {len(signals_to_manage)}")
+    print(f"  [VERIFY] Signals_to_open (deduped fresh only): {len(signals_to_open)}")
+    print(f"  [VERIFY] curr_keys source check: {len(curr_keys)} == {len(signals_to_manage)} ? {len(curr_keys) == len(signals_to_manage)}")
+
+    # Print actual key content for verification
+    if curr_keys:
+        print(f"  [VERIFY] Sample curr_keys (first 3): {curr_keys[:3]}")
+
+    # CRITICAL CHECK: If curr_keys == signals_to_open length, age filter is NOT being applied (BUG)
+    if len(curr_keys) == len(signals_to_open):
+        print(f"  [BUG DETECTED!] curr_keys has FRESH signal count! (should be ALL active)")
+        print(f"  Expected: {len(signals_to_manage)}, Got: {len(curr_keys)}")
+    elif len(curr_keys) == len(signals_to_manage):
+        print(f"  [VERIFIED OK] curr_keys built from ALL active signals (age filter NOT applied to closing)")
+    else:
+        print(f"  [WARNING] Unexpected curr_keys count mismatch")
+
+    # MIXED SCENARIO DETECTION
+    if len(active_signals) >= 5 and 0 < len(fresh_signals) < len(active_signals):
+        print(f"\n  *** MIXED SCENARIO DETECTED ***")
+        print(f"  Age filter removed {len(active_signals) - len(fresh_signals)} signals")
+        print(f"  Active >= 5: {len(active_signals)} | Fresh 1-4: {len(fresh_signals)}")
+        print(f"\n  [CRITICAL] Full key sets for analysis:")
+        print(f"  prev_keys ({len(prev_keys)} keys): {sorted(prev_keys)}")
+        print(f"  curr_keys ({len(curr_keys)} keys): {sorted(curr_keys)}")
+
+        # Check for missing keys
+        prev_set = set(prev_keys)
+        curr_set = set(curr_keys)
+        missing_from_curr = prev_set - curr_set
+        missing_from_prev = curr_set - prev_set
+
+        if missing_from_curr:
+            print(f"\n  [CRITICAL] Keys in prev but NOT in curr (WILL BE CLOSED): {missing_from_curr}")
+            for key in missing_from_curr:
+                print(f"    Key {key} will trigger CLOSE")
+                # Check if key was in signals
+                key_in_active = any(
+                    SignalKey.build(s.pair, s.side, s.tp, s.sl) == key
+                    for s in active_signals
+                )
+                key_in_fresh = any(
+                    SignalKey.build(s.pair, s.side, s.tp, s.sl) == key
+                    for s in fresh_signals
+                )
+                print(f"      In raw active: {key_in_active} | In fresh: {key_in_fresh}")
+                if key_in_active and not key_in_fresh:
+                    print(f"      REASON: Signal was aged-out by filter (BUG IF THIS HAPPENS)")
+
+        if missing_from_prev:
+            print(f"\n  [INFO] Keys in curr but NOT in prev (NEW): {missing_from_prev}")
+
+
     # ──── VIRTUAL SL CHECK (SPREAD-AWARE) ─────────────────────────────────────
     # Check and close positions that hit virtual SL (accounts for spread changes)
 
     mt5_positions = mt5.positions_get() or []
+    print(f"  [TRIGGER] VSL_CHECK_START")
     virtual_sl_closes = virtual_sl.check_and_close_all(
         mt5, positions, lambda t, p: close_position_by_ticket(t, p)
     )
+    print(f"  [TRIGGER] VSL_CHECK_END - closed {len(virtual_sl_closes or [])}")
 
     if virtual_sl_closes:
         log(LogLevel.INFO, f"Virtual SL closed {len(virtual_sl_closes)} position(s)")
         for ticket, key, reason in virtual_sl_closes:
             log(LogLevel.DEBUG, f"  {reason}")
+            # Remove from trailing stop tracking (position is now closed)
+            try:
+                trailing_stop_mgr.remove_position(ticket)
+                print(f"  [TRAIL] Removed T{ticket} (VSL close)")
+            except Exception as e:
+                log(LogLevel.DEBUG, f"Trailing stop remove failed for T{ticket}: {e}")
 
     # ──── CLEANUP CLOSED_BY_BOT FOR REAPPEARED SIGNALS ──────────────────────────
     # If signal reappears after being closed by virtual SL, allow reopen
     virtual_sl.cleanup_closed_signals(curr_keys)
 
+    # ──── TRAILING STOP UPDATE (PASSIVE LAYER) ──────────────────────────────────
+    # Update trailing stops for all tracked positions (SL adjustments only)
+    # FIX 2: FAIL-FAST - Crash if trailing stop fails (no silent errors)
+    try:
+        trailing_stop_mgr.update_all_positions(mt5)
+    except Exception as e:
+        log(LogLevel.CRITICAL, f"TRAILING STOP FAILURE: {e}")
+        print(f"[FATAL] Trailing stop failed: {e}")
+        raise RuntimeError("Trailing stop is offline — aborting bot")
+
     # ──── COMPUTE DIFF ───────────────────────────────────────────────────────
+    # RUNTIME VERIFICATION: Show exact inputs to diff calculation
+    print(f"  [VERIFY] Before diff - prev_keys count: {len(prev_keys)}, curr_keys count: {len(curr_keys)}")
+    if prev_keys and curr_keys:
+        print(f"  [VERIFY] Sample prev_key: {prev_keys[0]}")
+        print(f"  [VERIFY] Sample curr_key: {curr_keys[0]}")
 
     closed, opened = StateDifferencer.compute_diff(prev_keys, curr_keys)
 
@@ -308,6 +406,7 @@ def run_signal_cycle():
     escalated_count = 0
     if closed:
         log(LogLevel.INFO, f"Processing {len(closed)} key(s) to close")
+        print(f"  [TRIGGER] DIFF_CLOSE_START - {len(closed)} keys to close")
 
         # Get current MT5 positions for stale detection
         mt5_positions = mt5.positions_get() or []
@@ -327,14 +426,27 @@ def run_signal_cycle():
             # STALE DETECTION: Check if ticket was manually closed in MT5
             if safety.check_stale_tickets(ticket, mt5_positions):
                 positions.remove_ticket(ticket)
+                virtual_sl.remove_position(ticket)  # Clean up VSL tracking
+                try:
+                    trailing_stop_mgr.remove_position(ticket)
+                    print(f"  [TRAIL] Removed T{ticket} (stale detect)")
+                except Exception as e:
+                    log(LogLevel.DEBUG, f"Trailing stop remove failed for T{ticket}: {e}")
                 continue
 
             try:
                 # Attempt close
+                print(f"  [TRIGGER] DIFF_CLOSE_TICKET {ticket} for key {key}")
                 if close_position_by_ticket(ticket, key[0]):
                     # Success - NOW remove ticket from tracking
                     positions.remove_ticket(ticket)
                     virtual_sl.remove_position(ticket)  # Remove from virtual SL tracking
+                    # Remove from trailing stop tracking (position is now closed)
+                    try:
+                        trailing_stop_mgr.remove_position(ticket)
+                        print(f"  [TRAIL] Removed T{ticket} (DIFF close)")
+                    except Exception as e:
+                        log(LogLevel.DEBUG, f"Trailing stop remove failed for T{ticket}: {e}")
                     close_count += 1
                     safety.handle_close_success(ticket)
                     log(LogLevel.INFO, f"Closed and removed ticket {ticket} for {key[0]}")
@@ -350,6 +462,12 @@ def run_signal_cycle():
                         positions.remove_ticket(ticket)
                         positions.add_ticket(failed_key, ticket)
                         virtual_sl.remove_position(ticket)  # Stop monitoring virtual SL
+                        # Remove from trailing stop (position will not be retried)
+                        try:
+                            trailing_stop_mgr.remove_position(ticket)
+                            print(f"  [TRAIL] Removed T{ticket} (escalated to _FAILED_CLOSE_)")
+                        except Exception as e:
+                            log(LogLevel.DEBUG, f"Trailing stop remove failed for T{ticket}: {e}")
                         escalated_count += 1
                         log(LogLevel.CRITICAL, f"Escalated ticket {ticket} to _FAILED_CLOSE_ bucket after max retries")
 
@@ -363,8 +481,16 @@ def run_signal_cycle():
                     positions.remove_ticket(ticket)
                     positions.add_ticket(failed_key, ticket)
                     virtual_sl.remove_position(ticket)  # Stop monitoring virtual SL
+                    # Remove from trailing stop (position will not be retried)
+                    try:
+                        trailing_stop_mgr.remove_position(ticket)
+                        print(f"  [TRAIL] Removed T{ticket} (escalated to _FAILED_CLOSE_ on exception)")
+                    except Exception as e:
+                        log(LogLevel.DEBUG, f"Trailing stop remove failed for T{ticket}: {e}")
                     escalated_count += 1
                     log(LogLevel.CRITICAL, f"Escalated ticket {ticket} to _FAILED_CLOSE_ bucket after max retries (exception)")
+
+        print(f"  [TRIGGER] DIFF_CLOSE_END - closed {close_count}, escalated {escalated_count}")
 
     # ──── OPEN TRADES ────────────────────────────────────────────────────────
 
@@ -427,6 +553,21 @@ def run_signal_cycle():
                             tp=sig.tp,
                             entry_price=sig.open
                         )
+
+                        # Register with trailing stop for SL management
+                        try:
+                            trailing_stop_mgr.register_position(
+                                ticket=ticket,
+                                symbol=sig.pair,
+                                side=sig.side,
+                                entry_price=sig.open,
+                                tp=sig.tp,
+                                original_sl=sig.sl
+                            )
+                            print(f"  [TRAIL] Registered T{ticket} {sig.pair} {sig.side}")
+                        except Exception as e:
+                            log(LogLevel.ERROR, f"Trailing stop registration failed for T{ticket}: {e}")
+                            print(f"  [TRAIL_ERR] Failed to register T{ticket}: {e}")
 
                         open_count += 1
                         print(f"  [OK] Opened ticket {ticket} for {key}")
