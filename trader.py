@@ -85,10 +85,10 @@ def open_trade(signal):
         "price": price,
         "tp": tp,
         "sl": sl,
-        "deviation": 100,  # Increased from 20 (too small)
+        "deviation": 20,
         "magic": MAGIC_NUMBER,
         "comment": "blind",
-        "type_filling": mt5.ORDER_FILLING_FOK,  # Changed from IOC (not always supported)
+        "type_filling": mt5.ORDER_FILLING_IOC,
         "type_time": mt5.ORDER_TIME_GTC
     }
 
@@ -108,10 +108,7 @@ def open_trade(signal):
         print(f"  [SKIP] Price moved, invalid stops")
         return True, None  # Mark as processed
     else:
-        # Log detailed error info
-        print(f"  [FAILED] Order rejected: {result.retcode} | {result.comment}")
-        if result.retcode == 10019:
-            print(f"    [DEBUG] Invalid request: check volume ({TRADE_VOLUME}), SL ({sl}), TP ({tp}), price ({price})")
+        print(f"  [FAILED] Order rejected: {result.retcode}")
         return False, None
 
 
