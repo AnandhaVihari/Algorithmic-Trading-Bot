@@ -268,8 +268,6 @@ class TrailingStopManager:
         if not self.position_meta:
             return
 
-        SAFE_BUFFER = 0.20  # Buffer covers spread + commission
-
         for ticket in list(self.position_meta.keys()):
             meta = self.position_meta[ticket]
 
@@ -283,38 +281,46 @@ class TrailingStopManager:
             # ─── FIX 1: USE REAL ENTRY PRICE FROM MT5 ──────────────────────────
             entry_price = pos.price_open  # NOT stored signal price
 
-            # ─── FIX 2: USE SAFE PROFIT (NOISE FILTER) ──────────────────────────
+            # ─── FIX 2: USE SAFE PROFIT (DYNAMIC NOISE FILTER) ─────────────────
+            # Dynamic buffer based on current spread
+            symbol = meta['symbol']
+            tick = mt5_module.symbol_info_tick(symbol)
+            if not tick:
+                continue
+
+            spread = abs(tick.ask - tick.bid)
+            SAFE_BUFFER = max(spread * 2, 0.10)  # Dynamic: 2x spread or 0.10 minimum
+
             profit = pos.profit  # Real $ from MT5
             safe_profit = profit - SAFE_BUFFER  # Remove noise
 
             if safe_profit <= 0:
                 continue  # No real profit yet, skip
 
-            symbol = meta['symbol']
             current_sl = pos.sl
             current_phase = meta['last_phase']
 
             # ─── RUNTIME TRACE ──────────────────────────────────────────────────
             phase_names = {0: "Entry", 1: "BE", 2: "Lock30c", 3: "Lock50c", 4: "Lock$1"}
-            print(f"[TRAIL$_TRACE] T{ticket} | phase={phase_names[current_phase]} | price={pos.price_current:.5f} | entry={entry_price:.5f} | current_sl={current_sl:.5f} | profit=${profit:.2f} safe=${safe_profit:.2f}")
+            print(f"[TRAIL$_TRACE] T{ticket} | phase={phase_names[current_phase]} | price={pos.price_current:.5f} | entry={entry_price:.5f} | current_sl={current_sl:.5f} | profit=${profit:.2f} safe=${safe_profit:.2f} buffer=${SAFE_BUFFER:.5f}")
 
-            # ─── FIX 3: CALIBRATED PROFIT THRESHOLDS ────────────────────────────
-            if safe_profit >= 1.80:
+            # ─── FIX 3: SMOOTH PROFIT THRESHOLDS ─────────────────────────────────
+            if safe_profit >= 1.50:
                 lock_profit = 1.00
                 target_phase = 4
-                threshold = 1.80
-            elif safe_profit >= 1.20:
+                threshold = 1.50
+            elif safe_profit >= 1.00:
                 lock_profit = 0.50
                 target_phase = 3
-                threshold = 1.20
-            elif safe_profit >= 0.80:
+                threshold = 1.00
+            elif safe_profit >= 0.60:
                 lock_profit = 0.30
                 target_phase = 2
-                threshold = 0.80
-            elif safe_profit >= 0.40:
+                threshold = 0.60
+            elif safe_profit >= 0.30:
                 lock_profit = 0.00  # Breakeven
                 target_phase = 1
-                threshold = 0.40
+                threshold = 0.30
             else:
                 continue  # Not enough profit
 
@@ -350,18 +356,12 @@ class TrailingStopManager:
                     new_sl = entry_price - price_move
 
                 # ─── FIX 6: ADD SPREAD BUFFER ───────────────────────────────────
-                tick = mt5_module.symbol_info_tick(symbol)
-                if tick:
-                    spread = abs(tick.ask - tick.bid)
-                    buffer = max(spread * 2, 0.0001)
+                buffer = max(spread * 2, 0.0001)
 
-                    if pos.type == mt5_module.POSITION_TYPE_BUY:
-                        new_sl -= buffer
-                    else:
-                        new_sl += buffer
+                if pos.type == mt5_module.POSITION_TYPE_BUY:
+                    new_sl -= buffer
                 else:
-                    print(f"[TRAIL_ERR] T{ticket} No tick data for spread buffer")
-                    continue
+                    new_sl += buffer
 
                 # ─── FIX 7: PREVENT BACKWARD SL ─────────────────────────────────
                 if pos.type == mt5_module.POSITION_TYPE_BUY:
@@ -371,15 +371,7 @@ class TrailingStopManager:
                     if new_sl >= current_sl:
                         continue  # Would move backward, skip
 
-                # ─── FIX 8: CLAMP OVER-AGGRESSIVE MOVES ──────────────────────────
-                current_price = pos.price_current
-                max_allowed = abs(current_price - entry_price) * 0.8
-
-                if abs(new_sl - entry_price) > max_allowed:
-                    print(f"[TRAIL_SKIP] T{ticket} SL too aggressive (max_allowed={max_allowed:.5f})")
-                    continue
-
-                # ─── FIX 9: APPLY SL UPDATE ─────────────────────────────────────
+                # ─── FIX 8: APPLY SL UPDATE ─────────────────────────────────────
                 request = {
                     "action": mt5_module.TRADE_ACTION_SLTP,
                     "position": ticket,
