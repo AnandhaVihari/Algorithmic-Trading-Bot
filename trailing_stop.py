@@ -371,6 +371,30 @@ class TrailingStopManager:
                     if new_sl >= current_sl:
                         continue  # Would move backward, skip
 
+                # ─── FIX 7.5: VALIDATE SL AGAINST BROKER MINIMUM ──────────────────
+                # Ensure new SL respects broker minimum stop distance
+                try:
+                    symbol_info_validation = mt5_module.symbol_info(symbol)
+                    if symbol_info_validation:
+                        min_stops_points = symbol_info_validation.trade_stops_level
+                        point = symbol_info_validation.point
+                        min_distance = min_stops_points * point
+
+                        current_price = pos.price_current
+
+                        if pos.type == mt5_module.POSITION_TYPE_BUY:
+                            # BUY: SL must be at least min_distance BELOW price
+                            if (current_price - new_sl) < min_distance:
+                                new_sl = current_price - min_distance
+                                print(f"  [TRAIL_VALIDATE] T{ticket} SL adjusted for broker min: {current_sl:.5f} → {new_sl:.5f} (min_distance={min_distance:.5f})")
+                        else:  # SELL
+                            # SELL: SL must be at least min_distance ABOVE price
+                            if (new_sl - current_price) < min_distance:
+                                new_sl = current_price + min_distance
+                                print(f"  [TRAIL_VALIDATE] T{ticket} SL adjusted for broker min: {current_sl:.5f} → {new_sl:.5f} (min_distance={min_distance:.5f})")
+                except Exception as e:
+                    print(f"[TRAIL_ERR] T{ticket} Exception validating SL: {e}")
+
                 # ─── FIX 8: APPLY SL UPDATE ─────────────────────────────────────
                 request = {
                     "action": mt5_module.TRADE_ACTION_SLTP,
