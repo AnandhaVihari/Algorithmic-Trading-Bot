@@ -34,7 +34,68 @@ def init_mt5():
     print("MT5 connected")
 
 
-def get_adaptive_deviation(symbol: str) -> int:
+def validate_and_adjust_stops(symbol, side, price, tp, sl):
+    """Validate SL/TP against broker minimum stop distance.
+
+    Adjusts SL and TP if they violate broker minimum distance requirements.
+
+    Args:
+        symbol: Trading pair
+        side: 'BUY' or 'SELL'
+        price: Current price (bid/ask)
+        tp: Take profit level
+        sl: Stop loss level
+
+    Returns:
+        (adjusted_sl, adjusted_tp, was_adjusted)
+    """
+    try:
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            return sl, tp, False
+
+        # Get broker minimum stop distance in price units
+        min_stops_points = symbol_info.trade_stops_level
+        point = symbol_info.point
+        min_distance = min_stops_points * point
+
+        was_adjusted = False
+        adjusted_sl = sl
+        adjusted_tp = tp
+
+        # ─── ADJUST SL ──────────────────────────────────────────────────────
+        if side == 'BUY':
+            # For BUY: SL must be BELOW price by at least min_distance
+            if (price - adjusted_sl) < min_distance:
+                adjusted_sl = price - min_distance
+                was_adjusted = True
+        else:  # SELL
+            # For SELL: SL must be ABOVE price by at least min_distance
+            if (adjusted_sl - price) < min_distance:
+                adjusted_sl = price + min_distance
+                was_adjusted = True
+
+        # ─── ADJUST TP ──────────────────────────────────────────────────────
+        if side == 'BUY':
+            # For BUY: TP must be ABOVE price by at least min_distance
+            if (adjusted_tp - price) < min_distance:
+                adjusted_tp = price + min_distance
+                was_adjusted = True
+        else:  # SELL
+            # For SELL: TP must be BELOW price by at least min_distance
+            if (price - adjusted_tp) < min_distance:
+                adjusted_tp = price - min_distance
+                was_adjusted = True
+
+        if was_adjusted:
+            print(f"  [STOPS_FIXED] {symbol} | min_distance={min_distance:.5f} | SL: {sl:.5f}->{adjusted_sl:.5f} | TP: {tp:.5f}->{adjusted_tp:.5f}")
+
+        return adjusted_sl, adjusted_tp, was_adjusted
+
+    except Exception as e:
+        print(f"  [STOPS_ERR] Error validating stops for {symbol}: {e}")
+        return sl, tp, False
+
     """Calculate deviation based on current spread and volatility.
 
     JPY pairs and volatile symbols get higher deviation.
@@ -99,6 +160,11 @@ def open_trade(signal):
     result = None
 
     for attempt in range(MAX_RETRIES):
+        # FIX 7 (NEW): Validate and adjust SL/TP to broker minimum
+        adjusted_sl, adjusted_tp, stops_adjusted = validate_and_adjust_stops(
+            pair, side, price, tp, sl
+        )
+
         # FIX 6: Calculate adaptive deviation based on spread
         deviation = get_adaptive_deviation(pair)
 
@@ -108,8 +174,8 @@ def open_trade(signal):
             "volume": TRADE_VOLUME,
             "type": order_type,
             "price": price,
-            "tp": tp,
-            "sl": sl,
+            "tp": adjusted_tp,  # Use adjusted TP
+            "sl": adjusted_sl,  # Use adjusted SL
             "deviation": deviation,
             "magic": MAGIC_NUMBER,
             "comment": "blind",
@@ -125,7 +191,7 @@ def open_trade(signal):
 
         # Success - break loop
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            print(f"  [OPENED] {side} {pair} @ {result.price} | SL: {sl} | TP: {tp} | Ticket: {result.order} | Deviation: {deviation}")
+            print(f"  [OPENED] {side} {pair} @ {result.price} | SL: {adjusted_sl:.5f} | TP: {adjusted_tp:.5f} | Ticket: {result.order} | Deviation: {deviation}")
             return True, result.order
 
         # Price moved - try again with fresh price
