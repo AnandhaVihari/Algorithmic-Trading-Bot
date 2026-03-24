@@ -251,15 +251,15 @@ def run_signal_cycle():
 
     print(f"  Active: {len(active_signals)}, Close: {len(close_signals)}")
 
-    # ──── FILTER BY AGE: Only use fresh signals < 30 min old ──────────────────
-    # Age filter applies to BOTH opening new trades AND position management
+    # ──── FILTER BY AGE: Only open NEW trades from fresh signals (<30 min)
+    # Position management keeps ALL active signals to avoid closing active trades
 
     fresh_signals = SignalFilter.filter_by_age(active_signals, MAX_SIGNAL_AGE)
     print(f"  After age filter: {len(fresh_signals)} fresh active (max age: {MAX_SIGNAL_AGE}s)")
 
-    # For position management, also use age-filtered signals
-    # Signals older than 30 minutes are ignored for both opening and closing
-    all_active_signals = fresh_signals
+    # For position management, use ALL active signals (no age filter)
+    # This keeps trades open as long as signal is active on website
+    all_active_signals = active_signals
 
     # ──── DEDUPLICATE: Keep most recent per key ──────────────────────────────
 
@@ -306,11 +306,11 @@ def run_signal_cycle():
     if curr_keys:
         print(f"  [VERIFY] Sample curr_keys (first 3): {curr_keys[:3]}")
 
-    # CRITICAL CHECK: Verify age filter is being applied correctly to both opening and closing
-    if len(curr_keys) == len(signals_to_open):
-        print(f"  [VERIFIED OK] Age filter applied to both opening and closing")
-    elif len(curr_keys) != len(signals_to_open):
-        print(f"  [WARNING] curr_keys mismatch: {len(curr_keys)} != {len(signals_to_open)}")
+    # CRITICAL CHECK: Verify age filter is only applied to opening, not closing
+    if len(curr_keys) == len(signals_to_manage):
+        print(f"  [VERIFIED OK] Age filter only applied to opening (not closing)")
+    elif len(curr_keys) != len(signals_to_manage):
+        print(f"  [WARNING] curr_keys mismatch: {len(curr_keys)} != {len(signals_to_manage)}")
 
     # MIXED SCENARIO DETECTION
     if len(active_signals) >= 5 and 0 < len(fresh_signals) < len(active_signals):
@@ -342,7 +342,7 @@ def run_signal_cycle():
                 )
                 print(f"      In raw active: {key_in_active} | In fresh: {key_in_fresh}")
                 if key_in_active and not key_in_fresh:
-                    print(f"      REASON: Signal was aged-out by age filter (expected behavior)")
+                    print(f"      REASON: Signal aged-out (>30min) but still managed (expected for closing logic)")
 
         if missing_from_prev:
             print(f"\n  [INFO] Keys in curr but NOT in prev (NEW): {missing_from_prev}")
