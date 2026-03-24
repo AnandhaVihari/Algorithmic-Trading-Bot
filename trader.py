@@ -35,9 +35,10 @@ def init_mt5():
 
 
 def validate_and_adjust_stops(symbol, side, price, tp, sl):
-    """Validate SL/TP against broker minimum stop distance.
+    """Validate SL/TP against broker constraints (stops + freeze levels).
 
     Adjusts SL and TP if they violate broker minimum distance requirements.
+    Uses BOTH trade_stops_level AND trade_freeze_level.
 
     Args:
         symbol: Trading pair
@@ -54,10 +55,13 @@ def validate_and_adjust_stops(symbol, side, price, tp, sl):
         if not symbol_info:
             return sl, tp, False
 
-        # Get broker minimum stop distance in price units
-        min_stops_points = symbol_info.trade_stops_level
+        # Get BOTH broker constraints
+        stops_level = symbol_info.trade_stops_level
+        freeze_level = symbol_info.trade_freeze_level
         point = symbol_info.point
-        min_distance = min_stops_points * point
+
+        # Use the MAXIMUM of both (most restrictive)
+        min_distance = max(stops_level, freeze_level) * point
 
         was_adjusted = False
         adjusted_sl = sl
@@ -88,7 +92,7 @@ def validate_and_adjust_stops(symbol, side, price, tp, sl):
                 was_adjusted = True
 
         if was_adjusted:
-            print(f"  [STOPS_FIXED] {symbol} | min_distance={min_distance:.5f} | SL: {sl:.5f}->{adjusted_sl:.5f} | TP: {tp:.5f}->{adjusted_tp:.5f}")
+            print(f"  [STOPS_FIXED] {symbol} | stops_level={stops_level} freeze_level={freeze_level} | min_distance={min_distance:.5f} | SL: {sl:.5f}->{adjusted_sl:.5f} | TP: {tp:.5f}->{adjusted_tp:.5f}")
 
         return adjusted_sl, adjusted_tp, was_adjusted
 
@@ -96,27 +100,8 @@ def validate_and_adjust_stops(symbol, side, price, tp, sl):
         print(f"  [STOPS_ERR] Error validating stops for {symbol}: {e}")
         return sl, tp, False
 
-    """Calculate deviation based on current spread and volatility.
 
-    JPY pairs and volatile symbols get higher deviation.
-    Standard pairs get 50 pips.
-    """
-    tick = mt5.symbol_info_tick(symbol)
-    if not tick:
-        return 50  # Default fallback
-
-    # Calculate spread in pips
-    spread = abs(tick.ask - tick.bid)
-
-    # For JPY pairs (smaller pip value), use larger deviation
-    if "JPY" in symbol:
-        return max(100, int(spread * 10000 * 3))  # 3x spread or 100, whichever higher
-
-    # Standard pairs: 50 pips minimum, or 2x spread
-    return max(50, int(spread * 10000 * 2))
-
-
-
+def get_adaptive_deviation(symbol: str) -> int:
 def open_trade(signal):
     """
     Open a trade exactly as signal says with retry logic.
