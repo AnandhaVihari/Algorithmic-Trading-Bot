@@ -693,6 +693,55 @@ try:
                     mt5_positions, signals_for_reconstruction, positions
                 )
                 print(f"[STARTUP] Reconstructed {reconstructed} positions, {unmatched} unmatched\n")
+
+                # ──── REGISTER RECONSTRUCTED POSITIONS WITH TRAILING STOP ────────
+                # After reconstruction, all positions need to be registered for SL tracking
+                print(f"[STARTUP] Registering reconstructed positions with trailing stop...")
+                try:
+                    # Get all reconstructed positions back from MT5 to get full details
+                    mt5_positions_now = mt5.positions_get() or []
+                    mt5_by_ticket = {p.ticket: p for p in mt5_positions_now}
+
+                    # Iterate through all tracked positions and register those not yet in trailing stop
+                    registered_count = 0
+                    for key, tickets in positions.positions.items():
+                        # Skip special buckets
+                        if key[0] in ("_UNMATCHED_", "_FAILED_CLOSE_"):
+                            continue
+
+                        pair, side, tp, sl = key
+
+                        for ticket in tickets:
+                            # Check if already in trailing stop (to avoid re-registering)
+                            if ticket in trailing_stop_mgr.position_meta:
+                                continue
+
+                            # Get position from MT5
+                            mt5_pos = mt5_by_ticket.get(ticket)
+                            if not mt5_pos:
+                                continue
+
+                            # Register with trailing stop
+                            try:
+                                trailing_stop_mgr.register_position(
+                                    ticket=ticket,
+                                    symbol=mt5_pos.symbol,
+                                    side=side,
+                                    entry_price=mt5_pos.price_open,
+                                    tp=tp,
+                                    original_sl=sl
+                                )
+                                registered_count += 1
+                            except Exception as e:
+                                print(f"  [TRAIL_ERR] Failed to register T{ticket}: {e}")
+
+                    if registered_count > 0:
+                        print(f"[STARTUP] Registered {registered_count} position(s) with trailing stop\n")
+
+                except Exception as e:
+                    print(f"[STARTUP] Exception registering positions: {e}\n")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"[STARTUP] No existing MT5 positions to reconstruct\n")
         else:
