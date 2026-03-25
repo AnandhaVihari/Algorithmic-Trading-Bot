@@ -346,12 +346,10 @@ class TrailingStopManager:
             # ─── FIX 1: USE REAL ENTRY PRICE FROM MT5 ──────────────────────────
             entry_price = pos.price_open  # NOT stored signal price
 
-            # ─── FIX 2: USE SAFE PROFIT (NOISE FILTER IN DOLLARS) ────────────────
+            # ─── FIX 2: USE RAW PROFIT ──────────────────────────────────────────
             profit = pos.profit  # Real $ from MT5
-            SAFE_PROFIT_BUFFER = 0.10  # Buffer in dollars (covers spread + commission)
-            safe_profit = profit - SAFE_PROFIT_BUFFER  # Remove noise ($ - $ = correct)
 
-            if safe_profit <= 0:
+            if profit <= 0:
                 continue  # No real profit yet, skip
 
             # FIX: Use pos.symbol (from MT5) not meta['symbol'] for consistency
@@ -369,25 +367,21 @@ class TrailingStopManager:
 
             # ─── RUNTIME TRACE ──────────────────────────────────────────────────
             phase_names = {0: "Entry", 1: "BE", 2: "Lock30c", 3: "Lock50c", 4: "Lock$1"}
-            print(f"[TRAIL$_TRACE] T{ticket} | phase={phase_names[current_phase]} | price={pos.price_current:.5f} | entry={entry_price:.5f} | current_sl={current_sl:.5f} | profit=${profit:.2f} safe=${safe_profit:.2f} (buffer=${SAFE_PROFIT_BUFFER:.2f})")
+            print(f"[TRAIL_DEBUG] T{ticket} | phase={phase_names[current_phase]} | price={pos.price_current:.5f} | entry={entry_price:.5f} | profit=${profit:.2f}")
 
-            # ─── FIX 3: SMOOTH PROFIT THRESHOLDS ─────────────────────────────────
-            if safe_profit >= 1.50:
+            # ─── FIX 3: STEP-BASED PROFIT THRESHOLDS ────────────────────────────
+            if profit >= 1.50:
                 lock_profit = 1.00
                 target_phase = 4
-                threshold = 1.50
-            elif safe_profit >= 1.00:
+            elif profit >= 1.00:
                 lock_profit = 0.50
                 target_phase = 3
-                threshold = 1.00
-            elif safe_profit >= 0.60:
+            elif profit >= 0.60:
                 lock_profit = 0.30
                 target_phase = 2
-                threshold = 0.60
-            elif safe_profit >= 0.30:
+            elif profit >= 0.30:
                 lock_profit = 0.00  # Breakeven
                 target_phase = 1
-                threshold = 0.30
             else:
                 continue  # Not enough profit
 
@@ -395,118 +389,99 @@ class TrailingStopManager:
             if current_phase >= target_phase:
                 continue
 
-            # ─── FIX 4: STABLE PROFIT → PRICE CONVERSION ────────────────────────
+            # ─── FIX 4: DYNAMIC PROFIT-TO-PRICE RATIO ───────────────────────────
+            # Calculate the price movement per $1 of profit based on real market data
+            current_price = pos.price_current
+            price_per_dollar = abs(current_price - entry_price) / profit
+            price_move = lock_profit * price_per_dollar
+
+            # ─── FIX 5: CALCULATE NEW SL ────────────────────────────────────
+            if pos.type == mt5_module.POSITION_TYPE_BUY:
+                new_sl = entry_price + price_move
+            else:  # SELL
+                new_sl = entry_price - price_move
+
+            # ─── FIX 6: PREVENT BACKWARD SL ─────────────────────────────────
+            if pos.type == mt5_module.POSITION_TYPE_BUY:
+                if new_sl <= current_sl:
+                    continue  # Would move backward, skip
+            else:  # SELL
+                if new_sl >= current_sl:
+                    continue  # Would move backward, skip
+
+            # ─── FIX 6.5: VALIDATE SL AGAINST BROKER MINIMUM ──────────────────
+            # Ensure new SL respects broker minimum stop distance (incl. freeze level)
             try:
-                symbol_info = mt5_module.symbol_info(symbol)
-                if not symbol_info:
-                    print(f"[TRAIL_ERR] T{ticket} Symbol info unavailable for {symbol}")
+                symbol_info_validation = mt5_module.symbol_info(symbol)
+                if not symbol_info_validation:
+                    print(f"[TRAIL_ERR] T{ticket} Symbol info unavailable for {symbol} - cannot validate SL")
                     continue
 
-                tick_value = symbol_info.trade_tick_value
-                tick_size = symbol_info.trade_tick_size
+                stops_level = symbol_info_validation.trade_stops_level
+                freeze_level = symbol_info_validation.trade_freeze_level
+                point = symbol_info_validation.point
 
-                if tick_value == 0 or tick_size == 0:
-                    print(f"[TRAIL_ERR] T{ticket} Invalid tick data (value={tick_value}, size={tick_size})")
-                    continue
+                # Use MAXIMUM of both levels (most restrictive)
+                min_distance = max(stops_level, freeze_level) * point
 
-                value_per_price = tick_value / tick_size
-                if value_per_price == 0:
-                    print(f"[TRAIL_ERR] T{ticket} Zero value_per_price")
-                    continue
+                current_price = pos.price_current
 
-                # ─── FIX 5: CALCULATE NEW SL ────────────────────────────────────
-                price_move = lock_profit / value_per_price
-
+                # FIX 2: Explicit SL side validation BEFORE sending order
                 if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    new_sl = entry_price + price_move
-                else:  # SELL
-                    new_sl = entry_price - price_move
-
-                # ─── FIX 6: PREVENT BACKWARD SL ─────────────────────────────────
-                if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    if new_sl <= current_sl:
-                        continue  # Would move backward, skip
-                else:  # SELL
-                    if new_sl >= current_sl:
-                        continue  # Would move backward, skip
-
-                # ─── FIX 6.5: VALIDATE SL AGAINST BROKER MINIMUM ──────────────────
-                # Ensure new SL respects broker minimum stop distance (incl. freeze level)
-                try:
-                    symbol_info_validation = mt5_module.symbol_info(symbol)
-                    if not symbol_info_validation:
-                        print(f"[TRAIL_ERR] T{ticket} Symbol info unavailable for {symbol} - cannot validate SL")
+                    # BUY: SL MUST be BELOW current price
+                    if new_sl >= current_price:
+                        print(f"[TRAIL_SKIP] T{ticket} BUY: Invalid SL {new_sl:.5f} >= price {current_price:.5f} - skipping")
                         continue
-
-                    stops_level = symbol_info_validation.trade_stops_level
-                    freeze_level = symbol_info_validation.trade_freeze_level
-                    point = symbol_info_validation.point
-
-                    # Use MAXIMUM of both levels (most restrictive)
-                    min_distance = max(stops_level, freeze_level) * point
-
-                    current_price = pos.price_current
-
-                    # FIX 2: Explicit SL side validation BEFORE sending order
-                    if pos.type == mt5_module.POSITION_TYPE_BUY:
-                        # BUY: SL MUST be BELOW current price
-                        if new_sl >= current_price:
-                            print(f"[TRAIL_SKIP] T{ticket} BUY: Invalid SL {new_sl:.5f} >= price {current_price:.5f} - skipping")
-                            continue
-                        # BUY: SL must be at least min_distance BELOW price
-                        if (current_price - new_sl) < min_distance:
-                            new_sl = current_price - min_distance
-                            print(f"  [TRAIL_VALIDATE] T{ticket} BUY SL adjusted for broker min: {current_sl:.5f} → {new_sl:.5f} (distance required={min_distance:.5f})")
-                    else:  # SELL
-                        # SELL: SL MUST be ABOVE current price
-                        if new_sl <= current_price:
-                            print(f"[TRAIL_SKIP] T{ticket} SELL: Invalid SL {new_sl:.5f} <= price {current_price:.5f} - skipping")
-                            continue
-                        # SELL: SL must be at least min_distance ABOVE price
-                        if (new_sl - current_price) < min_distance:
-                            new_sl = current_price + min_distance
-                            print(f"  [TRAIL_VALIDATE] T{ticket} SELL SL adjusted for broker min: {current_sl:.5f} → {new_sl:.5f} (distance required={min_distance:.5f})")
-
-                except Exception as e:
-                    print(f"[TRAIL_ERR] T{ticket} Exception validating SL: {e}")
-                    continue
-
-                # ─── FIX 7: APPLY SL UPDATE ─────────────────────────────────────
-                # FIX 3: Add debug logging BEFORE sending
-                print(f"  [TRAIL_DEBUG] T{ticket} | Sending SL update: {current_sl:.5f} → {new_sl:.5f} | distance from price {pos.price_current:.5f}: {abs(pos.price_current - new_sl):.5f}")
-
-                request = {
-                    "action": mt5_module.TRADE_ACTION_SLTP,
-                    "position": ticket,
-                    "sl": new_sl,
-                    "tp": pos.tp
-                }
-
-                result = mt5_module.order_send(request)
-
-                if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
-                    # Update phase
-                    self.position_meta[ticket]['last_phase'] = target_phase
-                    self.phase_change_log[ticket] = datetime.now(timezone.utc).isoformat()
-
-                    # Log success
-                    phase_names_full = {0: "Entry", 1: "BE", 2: "Lock30c", 3: "Lock50c", 4: "Lock$1"}
-                    print(f"[TRAIL$] T{ticket} | {phase_names_full[current_phase]}→{phase_names_full[target_phase]} | profit=${profit:.2f} safe=${safe_profit:.2f} threshold=${threshold:.2f} lock=${lock_profit:.2f} | SL {current_sl:.5f}→{new_sl:.5f}")
-
-                    # Persist phase change immediately
-                    self._save_position_meta()
-                else:
-                    retcode = result.retcode if result else 'None'
-                    # FIX 4: Better error logging for debugging
-                    print(f"[TRAIL_ERR] T{ticket} SL update FAILED: retcode={retcode}")
-                    print(f"           Symbol={pos.symbol} | Type={'BUY' if pos.type == mt5_module.POSITION_TYPE_BUY else 'SELL'}")
-                    print(f"           Price={pos.price_current:.5f} | Current SL={current_sl:.5f} | Attempted SL={new_sl:.5f}")
-                    if result:
-                        print(f"           Result comment: {result.comment if hasattr(result, 'comment') else 'N/A'}")
+                    # BUY: SL must be at least min_distance BELOW price
+                    if (current_price - new_sl) < min_distance:
+                        new_sl = current_price - min_distance
+                        print(f"  [TRAIL_VALIDATE] T{ticket} BUY SL adjusted for broker min: {current_sl:.5f} → {new_sl:.5f} (distance required={min_distance:.5f})")
+                else:  # SELL
+                    # SELL: SL MUST be ABOVE current price
+                    if new_sl <= current_price:
+                        print(f"[TRAIL_SKIP] T{ticket} SELL: Invalid SL {new_sl:.5f} <= price {current_price:.5f} - skipping")
+                        continue
+                    # SELL: SL must be at least min_distance ABOVE price
+                    if (new_sl - current_price) < min_distance:
+                        new_sl = current_price + min_distance
+                        print(f"  [TRAIL_VALIDATE] T{ticket} SELL SL adjusted for broker min: {current_sl:.5f} → {new_sl:.5f} (distance required={min_distance:.5f})")
 
             except Exception as e:
-                print(f"[TRAIL_ERR] T{ticket} Exception: {e}")
+                print(f"[TRAIL_ERR] T{ticket} Exception validating SL: {e}")
                 continue
+
+            # ─── FIX 7: APPLY SL UPDATE ─────────────────────────────────────
+            # FIX 3: Add debug logging BEFORE sending
+            print(f"  [TRAIL_DEBUG] T{ticket} | Sending SL update: {current_sl:.5f} → {new_sl:.5f} | distance from price {pos.price_current:.5f}: {abs(pos.price_current - new_sl):.5f}")
+
+            request = {
+                "action": mt5_module.TRADE_ACTION_SLTP,
+                "position": ticket,
+                "sl": new_sl,
+                "tp": pos.tp
+            }
+
+            result = mt5_module.order_send(request)
+
+            if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
+                # Update phase
+                self.position_meta[ticket]['last_phase'] = target_phase
+                self.phase_change_log[ticket] = datetime.now(timezone.utc).isoformat()
+
+                # Log success
+                phase_names_full = {0: "Entry", 1: "BE", 2: "Lock30c", 3: "Lock50c", 4: "Lock$1"}
+                print(f"[TRAIL_STEP] T{ticket} | {phase_names_full[current_phase]}→{phase_names_full[target_phase]} | profit=${profit:.2f} lock=${lock_profit:.2f} (ratio={price_per_dollar:.6f}) | SL {current_sl:.5f}→{new_sl:.5f}")
+
+                # Persist phase change immediately
+                self._save_position_meta()
+            else:
+                retcode = result.retcode if result else 'None'
+                # FIX 4: Better error logging for debugging
+                print(f"[TRAIL_ERR] T{ticket} SL update FAILED: retcode={retcode}")
+                print(f"           Symbol={pos.symbol} | Type={'BUY' if pos.type == mt5_module.POSITION_TYPE_BUY else 'SELL'}")
+                print(f"           Price={pos.price_current:.5f} | Current SL={current_sl:.5f} | Attempted SL={new_sl:.5f}")
+                if result:
+                    print(f"           Result comment: {result.comment if hasattr(result, 'comment') else 'N/A'}")
 
 
 
