@@ -498,6 +498,22 @@ def run_signal_cycle():
         for key, count in opened.items():
             pair, side, tp, sl = key
 
+            # ──── NETTING CONFLICT CHECK (CRITICAL) ────────────────────────────
+            # MT5 netting mode: Having BUY and SELL on same symbol causes instant close
+            # Check if opposite direction already exists
+            opposite_side = "SELL" if side == "BUY" else "BUY"
+            opposite_exists = False
+            for existing_key in positions.positions.keys():
+                if existing_key[0] != "_UNMATCHED_" and existing_key[0] != "_FAILED_CLOSE_":
+                    existing_pair, existing_side, _, _ = existing_key
+                    if existing_pair == pair and existing_side == opposite_side:
+                        opposite_exists = True
+                        break
+
+            if opposite_exists:
+                print(f"  [FILTER] Skipped {side} signal for {pair} - opposite direction {opposite_side} already open (netting conflict)")
+                continue
+
             # CRITICAL: Skip if this position was recently closed by virtual SL
             # Prevent immediate reopen after bot-triggered close
             if virtual_sl.is_closed_by_bot(key):
