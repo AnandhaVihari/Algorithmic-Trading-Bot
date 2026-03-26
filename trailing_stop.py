@@ -2,6 +2,7 @@
 TRAILING STOP MANAGER - Dollar-Based Profit System
 
 Phase Model (DOLLAR THRESHOLDS):
+  Phase 1: $0.30 profit → Breakeven tracking (no SL selection)
   Phase 2: $0.60 profit → Lock $0.30 profit
   Phase 3: $1.00 profit → Lock $0.50 profit
   Phase 4: $1.50 profit → Lock $1.00 profit
@@ -215,17 +216,14 @@ class TrailingStopManager:
             else:  # SELL
                 max_loss_sl = entry_price + loss_cap_price  # Above entry for SELL
 
-            # ─── STEP 4: CALCULATE TRAILING SL (SELECTIVE - Only if profit >= $0.60) ───
+            # ─── STEP 4: CALCULATE TRAILING SL (SELECTIVE - Only if profit >= $0.30) ───
             # For trailing SL, use profit-based price_per_dollar (adaptive to position size)
             trailing_sl = None  # Initialize to None
             target_phase = current_phase  # Track for logging
             lock_profit = None
 
-            if profit >= 0.60:
-                # Only calculate trailing if enough profit to lock ($0.30+)
-                # This prevents breakeven (lock_profit=0.00) from being selected
-
-                # Only calculate trailing if profit threshold reached
+            if profit >= 0.30:
+                # Calculate phase based on profit threshold
                 if profit >= 1.50:
                     lock_profit = 1.00
                     target_phase = 4
@@ -235,9 +233,13 @@ class TrailingStopManager:
                 elif profit >= 0.60:
                     lock_profit = 0.30
                     target_phase = 2
+                elif profit >= 0.30:
+                    lock_profit = 0.00
+                    target_phase = 1
 
-                # Only calculate trailing SL if phase would advance
-                if current_phase < target_phase:
+                # Only calculate trailing SL if phase would advance AND lock_profit > 0
+                # Phase 1 (lock_profit=0.00) is tracked but doesn't create a competing SL
+                if current_phase < target_phase and lock_profit > 0:
                     price_move = lock_profit * price_per_dollar
 
                     # Apply directional logic for BUY and SELL
