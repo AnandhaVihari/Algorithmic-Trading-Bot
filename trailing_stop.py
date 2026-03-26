@@ -424,10 +424,13 @@ class TrailingStopManager:
                 if current_phase < target_phase:
                     price_move = lock_profit * price_per_dollar
 
+                    # ✓ FIX: Both BUY and SELL add price_move (correct direction for both)
+                    # BUY: SL moves UP (entry + move = higher SL below current price)
+                    # SELL: SL moves UP (entry + move = higher SL above current price for SELL logic)
                     if pos.type == mt5_module.POSITION_TYPE_BUY:
                         trailing_sl = entry_price + price_move
                     else:  # SELL
-                        trailing_sl = entry_price - price_move
+                        trailing_sl = entry_price + price_move  # ← FIXED: was minus, now plus
 
             # ─── STEP 4: UNIFIED SL DECISION (Pick safest/tightest SL) ─────────────────
             # Collect all candidate SL values - MUST validate side before using
@@ -499,7 +502,7 @@ class TrailingStopManager:
                 # Use MAXIMUM of both levels (most restrictive)
                 min_distance = max(stops_level, freeze_level) * point
 
-                # FIX 2: Explicit SL side validation BEFORE sending order
+                # ✓ FIX 2: Explicit SL side validation BEFORE sending order
                 if pos.type == mt5_module.POSITION_TYPE_BUY:
                     # BUY: SL MUST be BELOW current price
                     if final_sl >= current_price:
