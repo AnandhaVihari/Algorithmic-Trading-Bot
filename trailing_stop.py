@@ -2,13 +2,12 @@
 TRAILING STOP MANAGER - Dollar-Based Profit System
 
 Phase Model (DOLLAR THRESHOLDS):
-  Phase 1: $0.30 profit → Move SL to breakeven
   Phase 2: $0.60 profit → Lock $0.30 profit
   Phase 3: $1.00 profit → Lock $0.50 profit
   Phase 4: $1.50 profit → Lock $1.00 profit
 
 Uses ACTUAL profit from MT5 (pos.profit in $).
-Converts locked profit to price using tick_value.
+Converts locked profit to price using dynamic price_per_dollar ratio.
 Works across all pairs and lot sizes.
 
 SAFETY GUARANTEES:
@@ -21,8 +20,8 @@ SAFETY GUARANTEES:
 """
 
 import MetaTrader5 as mt5
-from typing import Dict, Tuple, Optional
-from datetime import datetime, timezone, timedelta
+from typing import Dict, Optional
+from datetime import datetime, timezone
 from operational_safety import log, LogLevel
 import json
 import os
@@ -64,7 +63,6 @@ class TrailingStopManager:
             'side': side,
             'last_phase': 0,
         }
-        # DEBUG: Print immediately to stdout
         print(f"[TRAIL$_REGISTER] T{ticket} {symbol} {side} | Entry: {entry_price:.5f} | TP: {tp:.5f} | SL: {original_sl:.5f}")
         log(LogLevel.DEBUG, f"[TRAIL] Registered T{ticket} {symbol} {side} | Entry: {entry_price} | TP: {tp}")
 
@@ -123,158 +121,6 @@ class TrailingStopManager:
         except Exception as e:
             print(f"[TRAIL_WARN] Failed to load position_meta: {e}")
 
-    def _get_profit_to_price_ratio(self, symbol: str) -> Optional[float]:
-        """Get $ profit per price unit movement.
-
-        Args:
-            symbol: Trading pair
-
-        Returns:
-            Ratio of price movement to profit ($) or None if unavailable
-        """
-        try:
-            symbol_info = mt5.symbol_info(symbol)
-            if not symbol_info:
-                return None
-
-            # tick_value = $ per tick (point)
-            # tick_size = price change per tick
-            # So: $profit_per_price_unit = tick_value / tick_size
-            if symbol_info.trade_tick_size == 0:
-                return None
-
-            profit_per_price = symbol_info.trade_tick_value / symbol_info.trade_tick_size
-            return profit_per_price
-        except Exception as e:
-            log(LogLevel.DEBUG, f"[TRAIL] Exception getting profit ratio for {symbol}: {e}")
-            return None
-
-    def _calculate_new_sl_from_profit(self, entry_price: float, lock_profit: float,
-                                     symbol: str, side: str) -> Optional[float]:
-        """Convert desired locked profit ($) to stop loss price level.
-
-        Args:
-            entry_price: Entry price of position
-            lock_profit: Profit to lock in $ (e.g., 0.3 for $0.30)
-            symbol: Trading pair
-            side: 'BUY' or 'SELL'
-
-        Returns:
-            New SL price level or None if calculation fails
-        """
-        # Get profit-to-price ratio
-        ratio = self._get_profit_to_price_ratio(symbol)
-        if ratio is None or ratio <= 0:
-            return None
-
-        # price_move = profit / ratio_of_profit_per_price
-        price_move = lock_profit / ratio
-
-        # Calculate new SL based on side
-        if side == 'BUY':
-            new_sl = entry_price + price_move
-        else:  # SELL
-            new_sl = entry_price - price_move
-
-        return new_sl
-
-    def _clamp_sl_for_symbol(self, sl: float, symbol: str, side: str) -> float:
-        """Clamp SL to valid range (don't go too close to market).
-
-        Args:
-            sl: Proposed stop loss level
-            symbol: Trading pair
-            side: 'BUY' or 'SELL'
-
-        Returns:
-            Valid stop loss level
-        """
-        tick = mt5.symbol_info_tick(symbol)
-        if not tick:
-            return sl
-
-        info = mt5.symbol_info(symbol)
-        if not info:
-            return sl
-
-        min_distance = info.point * 50  # ~50 points = 5 pips for 5-decimal pairs
-
-        if side == 'BUY':
-            # For BUY, SL must be below bid, at least min_distance away
-            return max(sl, tick.bid - min_distance)
-        else:  # SELL
-            # For SELL, SL must be above ask, at least min_distance away
-            return min(sl, tick.ask + min_distance)
-
-    def _update_sl_in_mt5(self, ticket: int, symbol: str, new_sl: float, side: str) -> bool:
-        """Update stop loss in MT5 via position_modify.
-
-        Args:
-            ticket: Position ticket
-            symbol: Trading pair
-            new_sl: New stop loss level
-            side: 'BUY' or 'SELL'
-
-        Returns:
-            True if update succeeded, False otherwise
-        """
-        try:
-            # Clamp SL to valid range
-            new_sl = self._clamp_sl_for_symbol(new_sl, symbol, side)
-
-            request = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "position": ticket,
-                "sl": new_sl,
-            }
-
-            result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                return True
-            else:
-                retcode = result.retcode if result else 'None'
-                log(LogLevel.DEBUG, f"[TRAIL] SL update failed for T{ticket}: retcode {retcode}")
-                return False
-        except Exception as e:
-            log(LogLevel.DEBUG, f"[TRAIL] Exception updating SL for T{ticket}: {e}")
-            return False
-
-    def _transition_phase(self, ticket: int, old_phase: int, new_phase: int,
-                         new_sl: float, reason: str) -> bool:
-        """Transition position to new phase and update SL in MT5.
-
-        Args:
-            ticket: Position ticket
-            old_phase: Current phase (0, 1, 2, 3, 4)
-            new_phase: Target phase
-            new_sl: New stop loss level to set
-            reason: Reason description for logging
-
-        Returns:
-            True if transition succeeded
-        """
-        if ticket not in self.position_meta:
-            return False
-
-        meta = self.position_meta[ticket]
-        symbol = meta['symbol']
-        side = meta['side']
-
-        # Update SL in MT5
-        if self._update_sl_in_mt5(ticket, symbol, new_sl, side):
-            # Update phase in metadata
-            self.position_meta[ticket]['last_phase'] = new_phase
-            self.phase_change_log[ticket] = datetime.now(timezone.utc).isoformat()
-
-            # Log transition
-            phase_names = {0: "Entry", 1: "BE", 2: "Lock30c", 3: "Lock50c", 4: "Lock$1"}
-            log(LogLevel.INFO, f"[TRAIL$] T{ticket} | Phase {old_phase} ({phase_names.get(old_phase, '?')}) -> {new_phase} ({phase_names.get(new_phase, '?')}) | {reason} | SL: {new_sl:.5f}")
-
-            return True
-        else:
-            log(LogLevel.DEBUG, f"[TRAIL] Phase transition failed for T{ticket}")
-            return False
-
     def reconcile_with_mt5(self, mt5_module):
         """Remove tracking for positions that no longer exist in MT5.
 
@@ -293,18 +139,16 @@ class TrailingStopManager:
                 self.remove_position(ticket)
 
     def update_all_positions(self, mt5_module):
-        """Update trailing stops for all tracked positions using ACTUAL profit from MT5.
+        """Update trailing stops for all tracked positions using dynamic price-per-dollar.
 
-        PRODUCTION-SAFE with 9 critical fixes:
-        1. Real entry price from MT5 (pos.price_open)
-        2. Safe profit with noise filter (profit - 0.20 buffer)
-        3. Calibrated thresholds (0.40, 0.80, 1.20, 1.80)
-        4. Stable profit → price conversion
-        5. Calculate new SL
-        6. Spread-aware buffer
-        7. Prevent backward SL
-        8. Clamp over-aggressive moves
-        9. Apply SL with logging
+        ARCHITECTURE:
+        1. Retrieve signal SL from original signal
+        2. Calculate dynamic price_per_dollar ratio (adapts to position size)
+        3. Calculate max_loss_sl: caps loss at $0.70
+        4. Calculate trailing_sl: phases at $0.60/$1.00/$1.50
+        5. Unified SL selection: pick safest/tightest candidate
+        6. Validate against broker minimum stop distance
+        7. Send SL update and persist phase change
 
         MUST be called every cycle in main loop:
           1. check_virtual_sl_and_close()
@@ -331,8 +175,7 @@ class TrailingStopManager:
         for ticket in list(self.position_meta.keys()):
             meta = self.position_meta[ticket]
 
-            # FIX 1: Use reliable position lookup
-            # Instead of positions_get(ticket=...), search through all positions
+            # Look up position in MT5
             if ticket not in mt5_tickets:
                 print(f"[TRAIL_WARN] T{ticket} not found in MT5 - skipping (position may be closed)")
                 continue
@@ -343,29 +186,23 @@ class TrailingStopManager:
                 print(f"[TRAIL_WARN] T{ticket} found in ticket set but not in list - skipping")
                 continue
 
-            # ─── FIX 1: USE REAL ENTRY PRICE FROM MT5 ──────────────────────────
-            entry_price = pos.price_open  # NOT stored signal price
-
-            # ─── FIX 2: USE RAW PROFIT ──────────────────────────────────────────
-            profit = pos.profit  # Real $ from MT5
-
-            # UNIFIED SL: Need profit != 0 to calculate price_per_dollar
-            # (can be negative or positive - max loss applies to both)
-            if profit == 0:
-                continue  # Cannot calculate price-to-dollar ratio with zero profit
-
-            # FIX: Use pos.symbol (from MT5) not meta['symbol'] for consistency
+            # ─── STEP 1: GET POSITION DATA ────────────────────────────────────────
+            entry_price = pos.price_open
+            profit = pos.profit
             symbol = pos.symbol
             current_sl = pos.sl
             current_phase = meta['last_phase']
             current_price = pos.price_current
 
+            # Skip if profit == 0 (can't calculate price_per_dollar ratio)
+            if profit == 0:
+                continue
+
             # ─── STEP 1: RETRIEVE SIGNAL SL ──────────────────────────────────────
             signal_sl = meta['original_sl']  # From website signal provider
 
             # ─── STEP 2: CALCULATE DYNAMIC PRICE-TO-PROFIT RATIO ───────────────────
-            # Use actual market conditions (price movement per dollar profit)
-            # This adapts to position size and market volatility
+            # Adapts to position size and market volatility
             price_per_dollar = abs(current_price - entry_price) / abs(profit)
 
             # ─── STEP 3: CALCULATE MAX LOSS SL (ALWAYS ACTIVE) ───────────────────
@@ -465,7 +302,7 @@ class TrailingStopManager:
                     continue  # Would move backward, skip
 
             # ─── STEP 6: VALIDATE SL AGAINST BROKER MINIMUM ──────────────────────
-            # Ensure final_sl respects broker minimum stop distance (incl. freeze level)
+            # Ensure final_sl respects broker minimum stop distance
             try:
                 symbol_info_validation = mt5_module.symbol_info(symbol)
                 if not symbol_info_validation:
@@ -479,7 +316,7 @@ class TrailingStopManager:
                 # Use MAXIMUM of both levels (most restrictive)
                 min_distance = max(stops_level, freeze_level) * point
 
-                # ✓ FIX 2: Explicit SL side validation BEFORE sending order
+                # Validate SL on correct side of price
                 if pos.type == mt5_module.POSITION_TYPE_BUY:
                     # BUY: SL MUST be BELOW current price
                     if final_sl >= current_price:
@@ -530,7 +367,6 @@ class TrailingStopManager:
                 self._save_position_meta()
             else:
                 retcode = result.retcode if result else 'None'
-                # FIX 4: Better error logging for debugging
                 print(f"[TRAIL_ERR] T{ticket} SL update FAILED: retcode={retcode}")
                 print(f"           Symbol={pos.symbol} | Type={'BUY' if pos.type == mt5_module.POSITION_TYPE_BUY else 'SELL'}")
                 print(f"           Price={current_price:.5f} | Current SL={current_sl:.5f} | Attempted SL={final_sl:.5f}")
