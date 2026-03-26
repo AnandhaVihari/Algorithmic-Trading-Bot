@@ -396,14 +396,15 @@ class TrailingStopManager:
                 print(f"[TRAIL_ERR] T{ticket} Exception calculating max_loss_sl: {e}")
                 continue
 
-            # ─── STEP 3: CALCULATE TRAILING SL (SELECTIVE - Only if profit >= $0.30) ───
+            # ─── STEP 3: CALCULATE TRAILING SL (SELECTIVE - Only if profit >= $0.60) ───
             # For trailing SL, use profit-based price_per_dollar (adaptive to position size)
             trailing_sl = None  # Initialize to None
             target_phase = current_phase  # Track for logging
             lock_profit = None
 
-            if profit >= 0.30:
-                # Dynamic ratio for trailing (responds to actual profit)
+            if profit >= 0.60:
+                # Only calculate trailing if enough profit to lock ($0.30+)
+                # This prevents breakeven (lock_profit=0.00) from being selected
                 price_per_dollar = abs(current_price - entry_price) / abs(profit)
 
                 # Only calculate trailing if profit threshold reached
@@ -416,9 +417,6 @@ class TrailingStopManager:
                 elif profit >= 0.60:
                     lock_profit = 0.30
                     target_phase = 2
-                elif profit >= 0.30:
-                    lock_profit = 0.00  # Breakeven
-                    target_phase = 1
 
                 # Only calculate trailing SL if phase would advance
                 if current_phase < target_phase:
