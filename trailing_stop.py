@@ -1,19 +1,20 @@
 """
-TRAILING STOP MANAGER - Dollar-Based Profit System
+TRAILING STOP MANAGER - Simple SL + Portfolio Close System
 
-Phase Model (DOLLAR THRESHOLDS):
-  Phase 1: $0.30 profit → Breakeven tracking (no SL selection)
-  Phase 2: $0.60 profit → Lock $0.30 profit
-  Phase 3: $1.00 profit → Lock $0.50 profit
-  Phase 4: $1.50 profit → Lock $1.00 profit
+System:
+  1. SL Breakeven Protection: Move SL to breakeven when profit >= $0.40
+  2. Portfolio-Level Close: Close ALL positions when:
+     - Number of open positions >= 3 AND
+     - Total P&L >= (num_positions × $1.00)
 
-Uses ACTUAL profit from MT5 (pos.profit in $).
-Converts locked profit to price using dynamic price_per_dollar ratio.
-Works across all pairs and lot sizes.
+Example:
+  3 open positions with +$3.10 total profit → Close all
+  10 open positions with +$8.50 total profit → Keep open (need $10.00)
+  10 open positions with +$10.10 total profit → Close all
 
 SAFETY GUARANTEES:
-  ✓ Never reduces SL (only forward movement)
-  ✓ Never closes positions (SL updates only)
+  ✓ Never reduces SL (only forward movement to breakeven)
+  ✓ Only closes positions at portfolio level, never individual
   ✓ Never touches UNMATCHED/FAILED_CLOSE
   ✓ Never interferes with diff logic or VSL
   ✓ Uses real MT5 profit, not estimates
@@ -24,6 +25,7 @@ import MetaTrader5 as mt5
 from typing import Dict, Optional
 from datetime import datetime, timezone
 from operational_safety import log, LogLevel
+from trader import close_position_by_ticket
 import json
 import os
 
@@ -140,16 +142,12 @@ class TrailingStopManager:
                 self.remove_position(ticket)
 
     def update_all_positions(self, mt5_module):
-        """Update trailing stops for all tracked positions using dynamic price-per-dollar.
-
-        ARCHITECTURE:
-        1. Retrieve signal SL from original signal
-        2. Calculate dynamic price_per_dollar ratio (adapts to position size)
-        3. Calculate max_loss_sl: caps loss at $0.70
-        4. Calculate trailing_sl: phases at $0.60/$1.00/$1.50
-        5. Unified SL selection: pick safest/tightest candidate
-        6. Validate against broker minimum stop distance
-        7. Send SL update and persist phase change
+        """
+        Simple trailing stop system:
+        1. Move SL to breakeven when profit >= $0.40
+        2. Close ALL positions when:
+           - num_positions >= 3 AND
+           - total_pnl >= (num_positions × $1.00)
 
         MUST be called every cycle in main loop:
           1. check_virtual_sl_and_close()
@@ -159,221 +157,85 @@ class TrailingStopManager:
         Args:
             mt5_module: MetaTrader5 module reference
         """
-        # RECONCILIATION - Remove stale tickets at START of every cycle
         self.reconcile_with_mt5(mt5_module)
 
-        # DEBUG: Always log how many positions we're tracking
-        if not self.position_meta:
-            print(f"[TRAIL$_DEBUG] No positions tracked (position_meta empty)")
+        all_mt5_positions = mt5_module.positions_get()
+        if not all_mt5_positions:
+            print(f"[TRAIL] No positions tracked")
             return
 
-        print(f"[TRAIL$_DEBUG] Processing {len(self.position_meta)} tracked position(s)")
+        num_positions = len(all_mt5_positions)
+        total_pnl = 0
 
-        # Get all positions once (more reliable than per-ticket lookup)
-        all_mt5_positions = mt5_module.positions_get()
-        mt5_tickets = {p.ticket for p in all_mt5_positions} if all_mt5_positions else set()
+        print(f"[TRAIL] Processing {num_positions} open position(s)")
 
-        for ticket in list(self.position_meta.keys()):
-            meta = self.position_meta[ticket]
+        # ─── STEP 1: MOVE SL TO BREAKEVEN AT $0.40 PROFIT (ALWAYS ACTIVE) ───
+        for pos in all_mt5_positions:
+            total_pnl += pos.profit
 
-            # Look up position in MT5
-            if ticket not in mt5_tickets:
-                print(f"[TRAIL_WARN] T{ticket} not found in MT5 - skipping (position may be closed)")
-                continue
+            if pos.profit >= 0.40:
+                # Calculate breakeven SL + 2 pips buffer
+                sl_buffer = 0.0002  # 2 pips
 
-            # Find position in cached list
-            pos = next((p for p in all_mt5_positions if p.ticket == ticket), None)
-            if pos is None:
-                print(f"[TRAIL_WARN] T{ticket} found in ticket set but not in list - skipping")
-                continue
-
-            # ─── STEP 1: GET POSITION DATA ────────────────────────────────────────
-            entry_price = pos.price_open
-            profit = pos.profit
-            symbol = pos.symbol
-            current_sl = pos.sl
-            current_phase = meta['last_phase']
-            current_price = pos.price_current
-
-            # Skip if profit == 0 (can't calculate price_per_dollar ratio)
-            if profit == 0:
-                continue
-
-            # ─── STEP 1: RETRIEVE SIGNAL SL ──────────────────────────────────────
-            signal_sl = meta['original_sl']  # From website signal provider
-
-            # ─── STEP 2: CALCULATE DYNAMIC PRICE-TO-PROFIT RATIO ───────────────────
-            # Adapts to position size and market volatility
-            price_per_dollar = abs(current_price - entry_price) / abs(profit)
-
-            # ─── STEP 3: CALCULATE MAX LOSS SL (ALWAYS ACTIVE) ───────────────────
-            # Use dynamic price_per_dollar to convert $0.70 cap to price movement
-            loss_cap = 0.70  # dollars - hard cap, never lose more than this
-            loss_cap_price = loss_cap * price_per_dollar
-
-            if pos.type == mt5_module.POSITION_TYPE_BUY:
-                max_loss_sl = entry_price - loss_cap_price  # Below entry for BUY
-            else:  # SELL
-                max_loss_sl = entry_price + loss_cap_price  # Above entry for SELL
-
-            # ─── STEP 4: CALCULATE TRAILING SL (SELECTIVE - Only if profit >= $0.30) ───
-            # For trailing SL, use profit-based price_per_dollar (adaptive to position size)
-            trailing_sl = None  # Initialize to None
-            target_phase = current_phase  # Track for logging
-            lock_profit = None
-
-            if profit >= 0.30:
-                # Calculate phase based on profit threshold
-                if profit >= 1.50:
-                    lock_profit = 1.00
-                    target_phase = 4
-                elif profit >= 1.00:
-                    lock_profit = 0.50
-                    target_phase = 3
-                elif profit >= 0.60:
-                    lock_profit = 0.30
-                    target_phase = 2
-                elif profit >= 0.30:
-                    lock_profit = 0.00
-                    target_phase = 1
-
-                # Only calculate trailing SL if phase would advance AND lock_profit > 0
-                # Phase 1 (lock_profit=0.00) is tracked but doesn't create a competing SL
-                if current_phase < target_phase and lock_profit > 0:
-                    price_move = lock_profit * price_per_dollar
-
-                    # Apply directional logic for BUY and SELL
-                    if pos.type == mt5_module.POSITION_TYPE_BUY:
-                        trailing_sl = entry_price + price_move
-                    else:  # SELL
-                        trailing_sl = entry_price + price_move
-
-            # ─── STEP 4: UNIFIED SL DECISION (Pick safest/tightest SL) ─────────────────
-            # Collect all candidate SL values - MUST validate side before using
-            candidates = []
-
-            # Add signal_sl if it's on the correct side
-            if pos.type == mt5_module.POSITION_TYPE_BUY:
-                if signal_sl < current_price:  # BUY: SL must be below price
-                    candidates.append(signal_sl)
-            else:  # SELL
-                if signal_sl > current_price:  # SELL: SL must be above price
-                    candidates.append(signal_sl)
-
-            # Add max_loss_sl if it's on the correct side
-            if pos.type == mt5_module.POSITION_TYPE_BUY:
-                if max_loss_sl < current_price:  # BUY: SL must be below price
-                    candidates.append(max_loss_sl)
-            else:  # SELL
-                if max_loss_sl > current_price:  # SELL: SL must be above price
-                    candidates.append(max_loss_sl)
-
-            # Add trailing_sl if calculated and on correct side
-            if trailing_sl is not None:
                 if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    if trailing_sl < current_price:  # BUY: SL must be below price
-                        candidates.append(trailing_sl)
+                    # BUY: SL goes 2 pips ABOVE entry (higher = protection from below)
+                    new_sl = pos.price_open + sl_buffer
                 else:  # SELL
-                    if trailing_sl > current_price:  # SELL: SL must be above price
-                        candidates.append(trailing_sl)
+                    # SELL: SL goes 2 pips BELOW entry (lower = protection from above)
+                    new_sl = pos.price_open - sl_buffer
 
-            # DEBUG: Log all candidates after validation
-            trailing_str = f"{trailing_sl:.5f}" if trailing_sl is not None else "N/A"
-            print(f"[SL_CAND] T{ticket} | signal={signal_sl:.5f} | max_loss={max_loss_sl:.5f} | trailing={trailing_str} | price={current_price:.5f}")
-            print(f"[SL_VALID] T{ticket} | Valid candidates after side check: {[f'{c:.5f}' for c in candidates]}")
+                # Only update if moving forward (protective)
+                if pos.type == mt5_module.POSITION_TYPE_BUY and new_sl > pos.sl:
+                    print(f"[TRAIL_SL] T{pos.ticket} {pos.symbol} BUY profit=${pos.profit:.2f} → Move SL to BE: {pos.sl:.5f} → {new_sl:.5f}")
+                    request = {
+                        "action": mt5_module.TRADE_ACTION_SLTP,
+                        "position": pos.ticket,
+                        "sl": new_sl,
+                        "tp": pos.tp
+                    }
+                    result = mt5_module.order_send(request)
+                    if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
+                        print(f"  [TRAIL_OK] SL updated successfully")
+                    else:
+                        print(f"  [TRAIL_ERR] SL update failed: {result.retcode if result else 'None'}")
 
-            # If no valid candidates, skip this position
-            if not candidates:
-                print(f"[TRAIL_SKIP] T{ticket} No valid SL candidates after side validation - skipping")
-                continue
+                elif pos.type == mt5_module.POSITION_TYPE_SELL and new_sl < pos.sl:
+                    print(f"[TRAIL_SL] T{pos.ticket} {pos.symbol} SELL profit=${pos.profit:.2f} → Move SL to BE: {pos.sl:.5f} → {new_sl:.5f}")
+                    request = {
+                        "action": mt5_module.TRADE_ACTION_SLTP,
+                        "position": pos.ticket,
+                        "sl": new_sl,
+                        "tp": pos.tp
+                    }
+                    result = mt5_module.order_send(request)
+                    if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
+                        print(f"  [TRAIL_OK] SL updated successfully")
+                    else:
+                        print(f"  [TRAIL_ERR] SL update failed: {result.retcode if result else 'None'}")
 
-            # Pick safest SL based on position side
-            if pos.type == mt5_module.POSITION_TYPE_BUY:
-                final_sl = max(candidates)  # Highest = tightest below price
-            else:  # SELL
-                final_sl = min(candidates)  # Lowest = tightest above price
+        # ─── STEP 2: PORTFOLIO-LEVEL CLOSE (ONLY IF >= 3 POSITIONS) ───────
+        if num_positions >= 3:
+            close_target = num_positions * 1.00  # $1.00 per position
 
-            print(f"[SL_SELECT] T{ticket} | Final SL: {final_sl:.5f}")
+            print(f"[PORTFOLIO] {num_positions} positions open | Total P&L: ${total_pnl:.2f} | Target: ${close_target:.2f}")
 
-            # ─── STEP 5: PREVENT BACKWARD SL (MONOTONIC) ────────────────────────
-            if pos.type == mt5_module.POSITION_TYPE_BUY:
-                if final_sl <= current_sl:
-                    continue  # Would move backward, skip
-            else:  # SELL
-                if final_sl >= current_sl:
-                    continue  # Would move backward, skip
+            if total_pnl >= close_target:
+                print(f"[CLOSE_ALL] TRIGGERING PORTFOLIO CLOSE!")
+                print(f"             {num_positions} open positions × $1.00 = ${close_target:.2f} target")
+                print(f"             Current P&L: ${total_pnl:.2f}")
+                print(f"             Closing all positions...")
 
-            # ─── STEP 6: VALIDATE SL AGAINST BROKER MINIMUM ──────────────────────
-            # Ensure final_sl respects broker minimum stop distance
-            try:
-                symbol_info_validation = mt5_module.symbol_info(symbol)
-                if not symbol_info_validation:
-                    print(f"[TRAIL_ERR] T{ticket} Symbol info unavailable for {symbol} - cannot validate SL")
-                    continue
+                closed_count = 0
+                for pos in all_mt5_positions:
+                    try:
+                        close_position_by_ticket(pos.ticket)
+                        closed_count += 1
+                    except Exception as e:
+                        print(f"  [ERROR] Failed to close T{pos.ticket}: {e}")
 
-                stops_level = symbol_info_validation.trade_stops_level
-                freeze_level = symbol_info_validation.trade_freeze_level
-                point = symbol_info_validation.point
-
-                # Use MAXIMUM of both levels (most restrictive)
-                min_distance = max(stops_level, freeze_level) * point
-
-                # Validate SL on correct side of price
-                if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    # BUY: SL MUST be BELOW current price
-                    if final_sl >= current_price:
-                        print(f"[TRAIL_SKIP] T{ticket} BUY: Invalid SL {final_sl:.5f} >= price {current_price:.5f} - skipping")
-                        continue
-                    # BUY: SL must be at least min_distance BELOW price
-                    if (current_price - final_sl) < min_distance:
-                        final_sl = current_price - min_distance
-                        print(f"  [TRAIL_VALIDATE] T{ticket} BUY SL adjusted for broker min: {current_sl:.5f} → {final_sl:.5f} (distance required={min_distance:.5f})")
-                else:  # SELL
-                    # SELL: SL MUST be ABOVE current price
-                    if final_sl <= current_price:
-                        print(f"[TRAIL_SKIP] T{ticket} SELL: Invalid SL {final_sl:.5f} <= price {current_price:.5f} - skipping")
-                        continue
-                    # SELL: SL must be at least min_distance ABOVE price
-                    if (final_sl - current_price) < min_distance:
-                        final_sl = current_price + min_distance
-                        print(f"  [TRAIL_VALIDATE] T{ticket} SELL SL adjusted for broker min: {current_sl:.5f} → {final_sl:.5f} (distance required={min_distance:.5f})")
-
-            except Exception as e:
-                print(f"[TRAIL_ERR] T{ticket} Exception validating SL: {e}")
-                continue
-
-            # ─── STEP 7: APPLY SL UPDATE ─────────────────────────────────────────
-            print(f"  [TRAIL_DEBUG] T{ticket} | Sending SL update: {current_sl:.5f} → {final_sl:.5f} | distance from price {current_price:.5f}: {abs(current_price - final_sl):.5f}")
-
-            request = {
-                "action": mt5_module.TRADE_ACTION_SLTP,
-                "position": ticket,
-                "sl": final_sl,
-                "tp": pos.tp
-            }
-
-            result = mt5_module.order_send(request)
-
-            if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
-                # Update phase if it changed
-                if lock_profit is not None:  # Phase was calculated
-                    self.position_meta[ticket]['last_phase'] = target_phase
-                    self.phase_change_log[ticket] = datetime.now(timezone.utc).isoformat()
-
-                # Enhanced logging showing all three SL sources
-                phase_names = {0: "Entry", 1: "BE", 2: "Lock30c", 3: "Lock50c", 4: "Lock$1"}
-                trailing_str = f"{trailing_sl:.5f}" if trailing_sl is not None else "N/A"
-                print(f"[FINAL_SL] T{ticket} | signal={signal_sl:.5f} | max_loss={max_loss_sl:.5f} | trailing={trailing_str} → final={final_sl:.5f} | profit=${profit:.2f}")
-
-                # Persist phase change immediately
-                self._save_position_meta()
-            else:
-                retcode = result.retcode if result else 'None'
-                print(f"[TRAIL_ERR] T{ticket} SL update FAILED: retcode={retcode}")
-                print(f"           Symbol={pos.symbol} | Type={'BUY' if pos.type == mt5_module.POSITION_TYPE_BUY else 'SELL'}")
-                print(f"           Price={current_price:.5f} | Current SL={current_sl:.5f} | Attempted SL={final_sl:.5f}")
-                if result:
-                    print(f"           Result comment: {result.comment if hasattr(result, 'comment') else 'N/A'}")
+                print(f"[CLOSE_ALL] Closed {closed_count}/{num_positions} positions")
+        else:
+            print(f"[PORTFOLIO] {num_positions} position(s) open (portfolio close inactive, need 3+)")
 
 
 
