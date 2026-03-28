@@ -1,5 +1,6 @@
-config.py
 *.log
 processed_signals.json
+trailing_stop_meta.json
+open_positions.json
 __pycache__/
 *.pyc
