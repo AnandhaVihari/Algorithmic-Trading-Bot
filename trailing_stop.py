@@ -161,13 +161,11 @@ class TrailingStopManager:
 
         all_mt5_positions = mt5_module.positions_get()
         if not all_mt5_positions:
-            print(f"[TRAIL] No positions tracked")
             return
 
         num_positions = len(all_mt5_positions)
         total_pnl = 0
-
-        print(f"[TRAIL] Processing {num_positions} open position(s)")
+        sl_updates = 0  # Track how many SL updates happened
 
         # ─── STEP 1: MOVE SL TO BREAKEVEN AT $0.40 PROFIT (ALWAYS ACTIVE) ───
         for pos in all_mt5_positions:
@@ -195,7 +193,8 @@ class TrailingStopManager:
                     }
                     result = mt5_module.order_send(request)
                     if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
-                        print(f"  [TRAIL_OK] SL updated successfully")
+                        print(f"  [TRAIL_OK] SL updated")
+                        sl_updates += 1
                     else:
                         print(f"  [TRAIL_ERR] SL update failed: {result.retcode if result else 'None'}")
 
@@ -209,7 +208,8 @@ class TrailingStopManager:
                     }
                     result = mt5_module.order_send(request)
                     if result and result.retcode == mt5_module.TRADE_RETCODE_DONE:
-                        print(f"  [TRAIL_OK] SL updated successfully")
+                        print(f"  [TRAIL_OK] SL updated")
+                        sl_updates += 1
                     else:
                         print(f"  [TRAIL_ERR] SL update failed: {result.retcode if result else 'None'}")
 
@@ -217,13 +217,9 @@ class TrailingStopManager:
         if num_positions >= 3:
             close_target = num_positions * 1.00  # $1.00 per position
 
-            print(f"[PORTFOLIO] {num_positions} positions open | Total P&L: ${total_pnl:.2f} | Target: ${close_target:.2f}")
-
             if total_pnl >= close_target:
                 print(f"[CLOSE_ALL] TRIGGERING PORTFOLIO CLOSE!")
-                print(f"             {num_positions} open positions × $1.00 = ${close_target:.2f} target")
-                print(f"             Current P&L: ${total_pnl:.2f}")
-                print(f"             Closing all positions...")
+                print(f"             {num_positions} positions | P&L: ${total_pnl:.2f} >= Target: ${close_target:.2f}")
 
                 closed_count = 0
                 for pos in all_mt5_positions:
@@ -234,8 +230,6 @@ class TrailingStopManager:
                         print(f"  [ERROR] Failed to close T{pos.ticket}: {e}")
 
                 print(f"[CLOSE_ALL] Closed {closed_count}/{num_positions} positions")
-        else:
-            print(f"[PORTFOLIO] {num_positions} position(s) open (portfolio close inactive, need 3+)")
 
 
 

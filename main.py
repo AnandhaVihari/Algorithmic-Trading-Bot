@@ -625,14 +625,15 @@ def signal_thread():
 
     while True:
         try:
-            # ──────── SESSION CHECK ────────────────────────────────────────
+            # ──────── SESSION CHECK (ONLY LOG ON CHANGE) ────────────────────────────────────────
             if not is_london_ny_overlap():
                 status = session_status_string()
-                print(status)
+                if status:  # Only log if state changed
+                    print(status)
                 time.sleep(SIGNAL_INTERVAL)
                 continue
 
-            # ──────── TRADING CYCLE (LONDON-NY OVERLAP ONLY) ────────────────
+            # ──────── TRADING CYCLE (LONDON-NY OVERLAP ONLY) ────────────────────────────────────
             # Check if MT5 is still connected
             if not mt5.initialize():
                 print("[ERROR] MT5 disconnected - attempting to reconnect...")

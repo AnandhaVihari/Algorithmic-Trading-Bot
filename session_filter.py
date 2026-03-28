@@ -8,11 +8,14 @@ Forex Trading Sessions (UTC):
 Overlap Window:
   - Winter (EST): 13:00 - 17:00 UTC (8:00 AM - 12:00 PM EST)
   - Summer (EDT): 13:00 - 17:00 UTC (9:00 AM - 1:00 PM EDT)
-  
+
 Note: Daylight saving transition handled automatically by system timezone
 """
 
 from datetime import datetime, timezone, timedelta
+
+# Track last logged state to avoid repetitive logging
+_last_state = None
 
 
 def is_london_ny_overlap():
@@ -82,15 +85,24 @@ def get_session_info():
 
 def session_status_string():
     """
-    Get human-readable session status.
-    
+    Get human-readable session status. Only logs if state changed.
+
     Returns:
-        str: Session status message
+        str or None: Session status message (None if no change)
     """
+    global _last_state
+
     info = get_session_info()
-    
+    current_state = info['trading_allowed']
+
+    # Only return log if state changed
+    if _last_state == current_state:
+        return None
+
+    _last_state = current_state
+
     status = f"[SESSION] {info['weekday']} {info['now_utc']} "
-    
+
     if info['is_weekend']:
         status += "| WEEKEND - Trading disabled"
     elif info['in_overlap']:
@@ -101,7 +113,7 @@ def session_status_string():
         status += "| NY only - London closed"
     else:
         status += "| Market closed - Waiting for London"
-    
+
     return status
 
 
