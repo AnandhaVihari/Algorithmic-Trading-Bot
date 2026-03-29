@@ -32,6 +32,7 @@ from signal_manager import (
 from operational_safety import OperationalSafety, log, LogLevel
 from virtual_sl import init_virtual_sl, get_virtual_sl_manager
 from trailing_stop import init_trailing_stop
+from session_filter import is_london_ny_overlap, session_status_string, is_signal_in_overlap, filter_signals_by_session
 from config import SIGNAL_INTERVAL, TRADE_VOLUME, MAX_SIGNAL_AGE
 
 print(f"\n{'='*80}")
@@ -257,6 +258,20 @@ def run_signal_cycle():
     fresh_signals = SignalFilter.filter_by_age(active_signals, MAX_SIGNAL_AGE)
     print(f"  After age filter: {len(fresh_signals)} fresh active (max age: {MAX_SIGNAL_AGE}s)")
 
+    # ──── FILTER BY SESSION: Only execute signals generated during overlap ────
+    # CRITICAL: Check signal.time (when signal was CREATED), not current time
+    # This prevents delayed execution of old signals even during overlap hours
+
+    overlap_signals = filter_signals_by_session(fresh_signals)
+    print(f"  After session filter: {len(overlap_signals)} signals from overlap (13:00-17:00 UTC)")
+
+    # Log any signals filtered out by session window
+    if len(fresh_signals) > len(overlap_signals):
+        filtered_out = len(fresh_signals) - len(overlap_signals)
+        for sig in fresh_signals:
+            if not is_signal_in_overlap(sig.time):
+                print(f"    [SESSION_SKIP] {sig.pair} {sig.side} created at {sig.time.strftime('%H:%M UTC')} (outside overlap)")
+
     # For position management, use ALL active signals (no age filter)
     # This keeps trades open as long as signal is active on website
     all_active_signals = active_signals
@@ -264,9 +279,10 @@ def run_signal_cycle():
     # ──── DEDUPLICATE: Keep most recent per key ──────────────────────────────
 
     # Sort by time DESC so deduplication keeps most recent
-    fresh_signals_sorted = sorted(fresh_signals, key=lambda s: s.time, reverse=True)
-    signals_to_open = SignalFilter.deduplicate_by_key(fresh_signals_sorted)
-    print(f"  After dedup: {len(signals_to_open)} unique fresh signals for opening")
+    # Use overlap_signals (session-filtered) for opening trades
+    overlap_signals_sorted = sorted(overlap_signals, key=lambda s: s.time, reverse=True)
+    signals_to_open = SignalFilter.deduplicate_by_key(overlap_signals_sorted)
+    print(f"  After dedup: {len(signals_to_open)} unique overlap signals for opening")
 
     # For position management, deduplicate ALL active signals
     all_active_sorted = sorted(all_active_signals, key=lambda s: s.time, reverse=True)
@@ -620,10 +636,19 @@ def run_signal_cycle():
 
 
 def signal_thread():
-    """Main loop: fetch signals every N seconds."""
+    """Main loop: fetch signals every N seconds (only during London-NY overlap)."""
 
     while True:
         try:
+            # ──────── SESSION CHECK (ONLY LOG ON CHANGE) ────────────────────────────────────────
+            if not is_london_ny_overlap():
+                status = session_status_string()
+                if status:  # Only log if state changed
+                    print(status)
+                time.sleep(SIGNAL_INTERVAL)
+                continue
+
+            # ──────── TRADING CYCLE (LONDON-NY OVERLAP ONLY) ────────────────────────────────────
             # Check if MT5 is still connected
             if not mt5.initialize():
                 print("[ERROR] MT5 disconnected - attempting to reconnect...")
@@ -693,6 +718,55 @@ try:
                     mt5_positions, signals_for_reconstruction, positions
                 )
                 print(f"[STARTUP] Reconstructed {reconstructed} positions, {unmatched} unmatched\n")
+
+                # ──── REGISTER RECONSTRUCTED POSITIONS WITH TRAILING STOP ────────
+                # After reconstruction, all positions need to be registered for SL tracking
+                print(f"[STARTUP] Registering reconstructed positions with trailing stop...")
+                try:
+                    # Get all reconstructed positions back from MT5 to get full details
+                    mt5_positions_now = mt5.positions_get() or []
+                    mt5_by_ticket = {p.ticket: p for p in mt5_positions_now}
+
+                    # Iterate through all tracked positions and register those not yet in trailing stop
+                    registered_count = 0
+                    for key, tickets in positions.positions.items():
+                        # Skip special buckets
+                        if key[0] in ("_UNMATCHED_", "_FAILED_CLOSE_"):
+                            continue
+
+                        pair, side, tp, sl = key
+
+                        for ticket in tickets:
+                            # Check if already in trailing stop (to avoid re-registering)
+                            if ticket in trailing_stop_mgr.position_meta:
+                                continue
+
+                            # Get position from MT5
+                            mt5_pos = mt5_by_ticket.get(ticket)
+                            if not mt5_pos:
+                                continue
+
+                            # Register with trailing stop
+                            try:
+                                trailing_stop_mgr.register_position(
+                                    ticket=ticket,
+                                    symbol=mt5_pos.symbol,
+                                    side=side,
+                                    entry_price=mt5_pos.price_open,
+                                    tp=tp,
+                                    original_sl=sl
+                                )
+                                registered_count += 1
+                            except Exception as e:
+                                print(f"  [TRAIL_ERR] Failed to register T{ticket}: {e}")
+
+                    if registered_count > 0:
+                        print(f"[STARTUP] Registered {registered_count} position(s) with trailing stop\n")
+
+                except Exception as e:
+                    print(f"[STARTUP] Exception registering positions: {e}\n")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"[STARTUP] No existing MT5 positions to reconstruct\n")
         else:

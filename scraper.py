@@ -13,7 +13,7 @@ headers = {
     "Referer": "https://massyart.com/"
 }
 
-# Proxy rotation state
+# Proxy rotation stat
 _proxy_list = []
 _proxy_index = 0
 _proxy_last_fetch = 0
