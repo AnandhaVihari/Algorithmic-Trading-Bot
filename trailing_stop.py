@@ -1,31 +1,37 @@
 """
-TRAILING STOP MANAGER - Data-Driven TP-Distance Trailing System
+TRAILING STOP MANAGER - Simplified TP-Distance Trailing System
 
 System:
-  1. RULE 1 (Optional) - Early Safety: When profit >= $0.10
-     - Lock small profit ($0.02) using price_per_dollar conversion
-     - Light early protection, easily overridden by TP-based trailing
+  1. RULE 1 (Breakeven Safety): When profit >= $0.40
+     - Move SL to ENTRY (confirmed profit protection)
+     - Protects only after trade proves strength
 
-  2. RULE 2 (Primary) - TP-Distance Trailing: When trade reaches 60% of TP distance
-     - Objective reference: current_move >= 0.60 × (tp - entry)
+  2. RULE 2 (TP-Distance Trailing): When 60% of TP distance reached
      - Lock 40% of TP distance as new SL
-     - Overrides RULE 1 when applicable (deeper protection)
+     - Primary scaling mechanism for strong trades
 
-  3. Portfolio-Level Close: Close ALL positions when:
+  3. Priority: Best SL wins (max for BUY, min for SELL)
+     - Both rules evaluated every cycle
+     - Only deepest protection applied
+
+  4. Portfolio-Level Close: Close ALL positions when:
      - Number of open positions >= 5 AND
      - Total P&L >= (num_positions × $0.90)
 
 Example:
   EURUSD Entry: 1.1000, TP: 1.1100 (100 pips)
-  - At 60% move (1.1060): Lock 40% distance (40 pips)
-  - New SL: 1.1040 (protective barrier)
+  - Cycle 1: profit +$0.30 → no SL move (below $0.40 threshold)
+  - Cycle 2: profit +$0.45, move 50% → SL moves to 1.1000 (breakeven)
+  - Cycle 3: profit +$0.70, move 70% (>60%) → SL moves to 1.1040 (40% lock)
 
   5 open positions with +$4.50 total profit → Close all
   10 open positions with +$9.00 total profit → Close all
   10 open positions with +$8.50 total profit → Keep open (need $9.00)
 
 SAFETY GUARANTEES:
-  ✓ TP-distance is objective reference, not subjective profit
+  ✓ No early micro-exits (only protect after confirmation)
+  ✓ Breakeven rule eliminates noise-based stopouts
+  ✓ TP-distance is objective and strength-based
   ✓ SL only moves forward (never backward)
   ✓ SL always on correct side of current price
   ✓ Only closes positions at portfolio level, never individual
@@ -36,7 +42,7 @@ SAFETY GUARANTEES:
   ✓ Preserves ticket safety and position integrity
 
 CORE PRINCIPLE:
-  "Trail based on distance moved toward TP, not absolute profit."
+  "Protect only after confirmation, not during noise."
 """
 
 import MetaTrader5 as mt5
@@ -159,26 +165,6 @@ class TrailingStopManager:
                 print(f"[TRAIL_CLEANUP] Removing stale ticket {ticket}")
                 self.remove_position(ticket)
 
-    def _calculate_price_per_dollar(self, current_price: float, entry_price: float, profit: float) -> float:
-        """
-        Calculate price movement per dollar of profit.
-
-        Used for dynamic SL calculations that scale with position size and volatility.
-
-        Args:
-            current_price: Current bid/ask price
-            entry_price: Position entry price
-            profit: Current profit in dollars
-
-        Returns:
-            Price distance per dollar (e.g., 0.0005 = 5 pips per $1 profit)
-        """
-        if profit <= 0:
-            return 0.0
-
-        price_move = abs(current_price - entry_price)
-        return price_move / profit
-
     def _is_sl_valid_for_buy(self, new_sl: float, current_price: float, old_sl: float) -> bool:
         """Check if new SL is valid for BUY position."""
         # SL must be below current price
@@ -201,19 +187,19 @@ class TrailingStopManager:
 
     def _apply_trailing_rules(self, pos, mt5_module) -> Optional[float]:
         """
-        Data-driven trailing stop based on TP distance.
+        Simplified data-driven trailing stop based on TP distance.
 
-        RULE 1 (optional): Light early protection when profit >= $0.10
-            - Lock small profit ($0.02) using price_per_dollar conversion
-            - Only for early protection, easily overridden
+        RULE 1 (Breakeven Safety): Confirm protection when profit >= $0.40
+            - Move SL to entry price (no buffer)
+            - Only after trade proves strength
 
-        RULE 2 (primary): TP-distance trailing when 60% of TP reached
-            - When current_move >= 60% of TP distance
-            - Lock 40% of TP distance as new SL
-            - This is the main trailing mechanism
+        RULE 2 (TP-Distance Trailing): Scale when 60% of TP distance reached
+            - Lock 40% of TP distance
+            - Applies to strong trades showing momentum
 
-        Priority: RULE 2 always overrides RULE 1 if both apply
-                  (TP-based is more objective than profit-based)
+        Priority: Evaluate both, use best SL
+            - For BUY: max(candidates) = higher SL = deeper protection
+            - For SELL: min(candidates) = lower SL = deeper protection
 
         Returns:
             New SL value if should update, None if no update needed
@@ -224,28 +210,13 @@ class TrailingStopManager:
 
         entry_price = meta['entry']
         tp = meta['tp']
-        new_sl = None
+        candidates = []
 
-        # ─── RULE 1: OPTIONAL EARLY SAFETY (profit >= $0.10, lock $0.02) ───
-        if pos.profit >= 0.10:
-            small_lock = 0.02
-            price_per_dollar = self._calculate_price_per_dollar(pos.price, entry_price, pos.profit)
+        # ─── RULE 1: BREAKEVEN SAFETY (profit >= $0.40) ───
+        if pos.profit >= 0.40:
+            candidates.append(entry_price)
 
-            if price_per_dollar > 0:
-                if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    new_sl = entry_price + (small_lock * price_per_dollar)
-                else:  # SELL
-                    new_sl = entry_price - (small_lock * price_per_dollar)
-
-                # Validate RULE 1
-                if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    if not self._is_sl_valid_for_buy(new_sl, pos.price, pos.sl):
-                        new_sl = None
-                else:  # SELL
-                    if not self._is_sl_valid_for_sell(new_sl, pos.price, pos.sl):
-                        new_sl = None
-
-        # ─── RULE 2: PRIMARY TP-DISTANCE TRAILING (60% move → lock 40% distance) ───
+        # ─── RULE 2: TP-DISTANCE TRAILING (60% move → lock 40% distance) ───
         tp_distance = abs(tp - entry_price)
         if tp_distance > 0:
             current_move = abs(pos.price - entry_price)
@@ -255,33 +226,41 @@ class TrailingStopManager:
                 lock_distance = 0.40 * tp_distance
 
                 if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    new_sl_rule2 = entry_price + lock_distance
+                    tp_sl = entry_price + lock_distance
                 else:  # SELL
-                    new_sl_rule2 = entry_price - lock_distance
+                    tp_sl = entry_price - lock_distance
 
-                # Validate RULE 2
-                if pos.type == mt5_module.POSITION_TYPE_BUY:
-                    if self._is_sl_valid_for_buy(new_sl_rule2, pos.price, pos.sl):
-                        # Use RULE 2 if it's deeper (higher SL for BUY) or RULE 1 not available
-                        if new_sl is None or new_sl_rule2 > new_sl:
-                            new_sl = new_sl_rule2
-                else:  # SELL
-                    if self._is_sl_valid_for_sell(new_sl_rule2, pos.price, pos.sl):
-                        # Use RULE 2 if it's deeper (lower SL for SELL) or RULE 1 not available
-                        if new_sl is None or new_sl_rule2 < new_sl:
-                            new_sl = new_sl_rule2
+                candidates.append(tp_sl)
+
+        # ─── SELECT BEST SL (DEEPEST PROTECTION) ───
+        if not candidates:
+            return None
+
+        if pos.type == mt5_module.POSITION_TYPE_BUY:
+            # For BUY: higher SL = deeper (protects from bigger loss)
+            new_sl = max(candidates)
+        else:  # SELL
+            # For SELL: lower SL = deeper (protects from bigger loss)
+            new_sl = min(candidates)
+
+        # ─── VALIDATE SL ───
+        if pos.type == mt5_module.POSITION_TYPE_BUY:
+            if not self._is_sl_valid_for_buy(new_sl, pos.price, pos.sl):
+                return None
+        else:  # SELL
+            if not self._is_sl_valid_for_sell(new_sl, pos.price, pos.sl):
+                return None
 
         return new_sl
 
     def update_all_positions(self, mt5_module):
         """
-        Data-driven trailing stop system based on TP distance:
+        Simplified trailing stop system:
 
-        1. RULE 1 (Optional): Early light protection when profit >= $0.10
-        2. RULE 2 (Primary): TP-distance trailing when 60% of TP reached
-           - Lock 40% of TP distance when current_move >= 60% of TP distance
-           - Overrides RULE 1 if applicable (deeper SL)
-        3. Portfolio close: All positions when >= 5 positions AND total PnL >= (num × $0.90)
+        1. RULE 1 (Breakeven): Move SL to entry when profit >= $0.40
+        2. RULE 2 (TP-Trail): Move SL to lock 40% of TP dist when 60% of move reached
+        3. Priority: Use best SL (max for BUY, min for SELL)
+        4. Portfolio close: All positions when >= 5 positions AND total PnL >= (num × $0.90)
 
         MUST be called every cycle in main loop:
           1. check_virtual_sl_and_close()
@@ -299,26 +278,32 @@ class TrailingStopManager:
 
         num_positions = len(all_mt5_positions)
         total_pnl = 0
-        sl_updates = 0  # Track how many SL updates happened
+        sl_updates = 0
 
         # ─── STEP 1: APPLY TRAILING RULES TO EACH POSITION ───
         for pos in all_mt5_positions:
             total_pnl += pos.profit
 
-            # Apply RULE 1 → RULE 2 logic (RULE 2 is primary and overrides)
+            # Apply RULE 1 + RULE 2, get best SL
             new_sl = self._apply_trailing_rules(pos, mt5_module)
 
             if new_sl is not None:
-                # Determine which rule is providing this SL
+                # Determine which rule(s) are providing this SL
                 meta = self.position_meta.get(pos.ticket)
+                rule_names = []
+
+                if meta and pos.profit >= 0.40:
+                    rule_names.append("BREAKEVEN")
+
                 if meta:
                     tp_distance = abs(meta['tp'] - meta['entry'])
                     current_move = abs(pos.price - meta['entry'])
-                    rule_name = "TP-TRAIL" if (tp_distance > 0 and current_move >= 0.60 * tp_distance) else "EARLY-SAFE"
-                else:
-                    rule_name = "UNKNOWN"
+                    if tp_distance > 0 and current_move >= 0.60 * tp_distance:
+                        rule_names.append("TP-TRAIL")
 
-                print(f"[TRAIL_SL] T{pos.ticket} {pos.symbol} {rule_name} profit=${pos.profit:.2f} → SL: {pos.sl:.5f} → {new_sl:.5f}")
+                rule_desc = "+".join(rule_names) if rule_names else "UNKNOWN"
+
+                print(f"[TRAIL_SL] T{pos.ticket} {pos.symbol} {rule_desc} profit=${pos.profit:.2f} → SL: {pos.sl:.5f} → {new_sl:.5f}")
 
                 request = {
                     "action": mt5_module.TRADE_ACTION_SLTP,
