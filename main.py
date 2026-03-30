@@ -33,6 +33,7 @@ from signal_manager import (
 from operational_safety import OperationalSafety, log, LogLevel
 from virtual_sl import init_virtual_sl, get_virtual_sl_manager
 from trailing_stop import init_trailing_stop
+from session_filter import is_trading_session_allowed, get_session_status_for_mode
 from config import SIGNAL_INTERVAL, TRADE_VOLUME, MAX_SIGNAL_AGE
 
 print(f"\n{'='*80}")
@@ -106,39 +107,42 @@ def save_processed_signals(signal_set):
 
 
 def load_bot_control():
-    """Load bot control settings (kill switch, mode, etc).
+    """Load bot control settings (session mode, etc).
 
     Returns:
-        dict: {
-            'enabled': bool (True to run, False to pause),
-            'mode': str ('full', 'close_only', 'monitoring')
-        }
+        dict: {'trading_sessions': str}
 
     File format (bot_control.json):
         {
             "enabled": true,
-            "mode": "full"
+            "trading_sessions": "all"
         }
+
+    Valid modes:
+        'all' - trade 24/7
+        'london' - 08:00-17:00 UTC only
+        'ny' - 13:00-22:00 UTC only
+        'overlap' - 13:00-17:00 UTC only (London-NY overlap)
+        'asia' - 22:00-08:00 UTC (Tokyo, Sydney, Singapore)
     """
     try:
         if not os.path.exists('bot_control.json'):
-            # Default: enabled, full trading
-            return {'enabled': True, 'mode': 'full'}
+            return {'trading_sessions': 'all'}
 
         with open('bot_control.json', 'r') as f:
             control = json.load(f)
 
-        # Validate values
-        control['enabled'] = control.get('enabled', True)
-        valid_modes = ['full', 'close_only', 'monitoring']
-        control['mode'] = control.get('mode', 'full')
-        if control['mode'] not in valid_modes:
-            control['mode'] = 'full'
+        mode = control.get('trading_sessions', 'all').lower().strip()
+        valid_modes = ['all', 'london', 'ny', 'overlap', 'asia']
 
-        return control
+        if mode not in valid_modes:
+            print(f"[WARNING] Invalid trading_sessions mode: {mode}, defaulting to 'all'")
+            mode = 'all'
+
+        return {'trading_sessions': mode}
     except Exception as e:
-        print(f"[WARNING] Failed to load bot_control.json: {e}, defaulting to enabled/full")
-        return {'enabled': True, 'mode': 'full'}
+        print(f"[WARNING] Failed to load bot_control.json: {e}, defaulting to 'all'")
+        return {'trading_sessions': 'all'}
 
 
 def get_signal_id(sig: Signal) -> str:
@@ -313,6 +317,21 @@ def run_signal_cycle():
 
     fresh_signals = SignalFilter.filter_by_age(active_signals, MAX_SIGNAL_AGE)
     print(f"  After age filter: {len(fresh_signals)} fresh active (max age: {MAX_SIGNAL_AGE}s)")
+
+    # ──── CHECK SESSION MODE (FROM BOT_CONTROL.JSON) ───────────────────────────
+    # Only open trades if current time is within configured trading session window
+
+    bot_control = load_bot_control()
+    trading_session_mode = bot_control.get('trading_sessions', 'all')
+
+    if not is_trading_session_allowed(trading_session_mode):
+        session_info = get_session_status_for_mode(trading_session_mode)
+        print(f"  [SESSION] Mode='{trading_session_mode}' | Not trading: {session_info['now_utc']}")
+        # Still manage open positions, but don't open new ones
+        fresh_signals = []
+    else:
+        session_info = get_session_status_for_mode(trading_session_mode)
+        print(f"  [SESSION] Mode='{trading_session_mode}' | Trading ACTIVE | {session_info['now_utc']}")
 
     # For position management, use ALL active signals (no age filter)
     # This keeps trades open as long as signal is active on website
