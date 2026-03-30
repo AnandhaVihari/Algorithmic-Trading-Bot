@@ -33,7 +33,6 @@ from signal_manager import (
 from operational_safety import OperationalSafety, log, LogLevel
 from virtual_sl import init_virtual_sl, get_virtual_sl_manager
 from trailing_stop import init_trailing_stop
-from session_filter import is_trading_session_allowed, get_session_status_for_mode
 from config import SIGNAL_INTERVAL, TRADE_VOLUME, MAX_SIGNAL_AGE
 
 print(f"\n{'='*80}")
@@ -317,21 +316,6 @@ def run_signal_cycle():
 
     fresh_signals = SignalFilter.filter_by_age(active_signals, MAX_SIGNAL_AGE)
     print(f"  After age filter: {len(fresh_signals)} fresh active (max age: {MAX_SIGNAL_AGE}s)")
-
-    # ──── CHECK SESSION MODE (FROM BOT_CONTROL.JSON) ───────────────────────────
-    # Only open trades if current time is within configured trading session window
-
-    bot_control = load_bot_control()
-    trading_session_mode = bot_control.get('trading_sessions', 'all')
-
-    if not is_trading_session_allowed(trading_session_mode):
-        session_info = get_session_status_for_mode(trading_session_mode)
-        print(f"  [SESSION] Mode='{trading_session_mode}' | Not trading: {session_info['now_utc']}")
-        # Still manage open positions, but don't open new ones
-        fresh_signals = []
-    else:
-        session_info = get_session_status_for_mode(trading_session_mode)
-        print(f"  [SESSION] Mode='{trading_session_mode}' | Trading ACTIVE | {session_info['now_utc']}")
 
     # For position management, use ALL active signals (no age filter)
     # This keeps trades open as long as signal is active on website
@@ -707,34 +691,11 @@ def run_signal_cycle():
 
 
 def signal_thread():
-    """Main loop: fetch signals every N seconds (24/7, all signals, respects bot_control.json)."""
+    """Main loop: fetch signals every N seconds (24/7, all signals, all sessions)."""
 
-    trading_active = True  # Track previous state for logging
     while True:
         try:
-
-            # ──────── CHECK BOT CONTROL (KILL SWITCH) ────────────────────────────────────────
-            control = load_bot_control()
-
-            if not control['enabled']:
-                # Bot is paused
-                if trading_active:
-                    print(f"[CONTROL] Bot PAUSED (enabled=false in bot_control.json)")
-                    trading_active = False
-                time.sleep(SIGNAL_INTERVAL)
-                continue
-
-            # Bot should be active
-            if not trading_active:
-                print(f"[CONTROL] Bot RESUMED (enabled=true in bot_control.json)")
-                trading_active = True
-
-            mode = control['mode']
-            if mode not in ['full', 'close_only', 'monitoring']:
-                mode = 'full'
-
-            # ──────── TRADING CYCLE (LONDON-NY OVERLAP ONLY) ────────────────────────────────────
-            # Check if MT5 is still connected
+            # ──────── CHECK MT5 CONNECTION ──────────────────────────────────────────────────────
             try:
                 if not mt5.initialize():
                     print("[ERROR_MT5] MT5 disconnected - attempting to reconnect...")
@@ -750,21 +711,9 @@ def signal_thread():
                 time.sleep(5)
                 continue
 
-            # ──────── RUN SIGNAL CYCLE ────────────────────────────────────────────────────────
+            # ──────── RUN SIGNAL CYCLE (24/7) ────────────────────────────────────────────────────
             try:
-                if mode == 'full':
-                    # Normal operation: open and close trades
-                    run_signal_cycle()
-                elif mode == 'close_only':
-                    # Only close positions, don't open new ones
-                    print("[CONTROL] Close-only mode: not opening new trades")
-                    run_signal_cycle()
-                elif mode == 'monitoring':
-                    # Just monitor, no opens/closes
-                    print("[CONTROL] Monitoring mode: no trades, just watching")
-                    time.sleep(SIGNAL_INTERVAL)
-                    continue
-
+                run_signal_cycle()
             except Exception as e:
                 print(f"[ERROR_CYCLE] Signal cycle error: {e}")
                 # Don't re-raise - allow loop to continue
