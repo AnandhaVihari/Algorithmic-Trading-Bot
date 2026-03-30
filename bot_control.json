@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "mode": "full",
+  "notes": "KILL SWITCH CONTROL - bot reads this every cycle (no restart needed)"
+}
+

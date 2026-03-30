@@ -105,6 +105,42 @@ def save_processed_signals(signal_set):
         print(f"[ERROR_JSON] Failed to save processed_signals: {e}, changes may be lost")
 
 
+def load_bot_control():
+    """Load bot control settings (kill switch, mode, etc).
+
+    Returns:
+        dict: {
+            'enabled': bool (True to run, False to pause),
+            'mode': str ('full', 'close_only', 'monitoring')
+        }
+
+    File format (bot_control.json):
+        {
+            "enabled": true,
+            "mode": "full"
+        }
+    """
+    try:
+        if not os.path.exists('bot_control.json'):
+            # Default: enabled, full trading
+            return {'enabled': True, 'mode': 'full'}
+
+        with open('bot_control.json', 'r') as f:
+            control = json.load(f)
+
+        # Validate values
+        control['enabled'] = control.get('enabled', True)
+        valid_modes = ['full', 'close_only', 'monitoring']
+        control['mode'] = control.get('mode', 'full')
+        if control['mode'] not in valid_modes:
+            control['mode'] = 'full'
+
+        return control
+    except Exception as e:
+        print(f"[WARNING] Failed to load bot_control.json: {e}, defaulting to enabled/full")
+        return {'enabled': True, 'mode': 'full'}
+
+
 def get_signal_id(sig: Signal) -> str:
     """Create unique signal ID from signal timestamp + key."""
     key = SignalKey.build(sig.pair, sig.side, sig.tp, sig.sl)
@@ -652,10 +688,31 @@ def run_signal_cycle():
 
 
 def signal_thread():
-    """Main loop: fetch signals every N seconds (24/7, all signals)."""
+    """Main loop: fetch signals every N seconds (24/7, all signals, respects bot_control.json)."""
 
+    trading_active = True  # Track previous state for logging
     while True:
         try:
+
+            # ──────── CHECK BOT CONTROL (KILL SWITCH) ────────────────────────────────────────
+            control = load_bot_control()
+
+            if not control['enabled']:
+                # Bot is paused
+                if trading_active:
+                    print(f"[CONTROL] Bot PAUSED (enabled=false in bot_control.json)")
+                    trading_active = False
+                time.sleep(SIGNAL_INTERVAL)
+                continue
+
+            # Bot should be active
+            if not trading_active:
+                print(f"[CONTROL] Bot RESUMED (enabled=true in bot_control.json)")
+                trading_active = True
+
+            mode = control['mode']
+            if mode not in ['full', 'close_only', 'monitoring']:
+                mode = 'full'
 
             # ──────── TRADING CYCLE (LONDON-NY OVERLAP ONLY) ────────────────────────────────────
             # Check if MT5 is still connected
@@ -676,7 +733,19 @@ def signal_thread():
 
             # ──────── RUN SIGNAL CYCLE ────────────────────────────────────────────────────────
             try:
-                run_signal_cycle()
+                if mode == 'full':
+                    # Normal operation: open and close trades
+                    run_signal_cycle()
+                elif mode == 'close_only':
+                    # Only close positions, don't open new ones
+                    print("[CONTROL] Close-only mode: not opening new trades")
+                    run_signal_cycle()
+                elif mode == 'monitoring':
+                    # Just monitor, no opens/closes
+                    print("[CONTROL] Monitoring mode: no trades, just watching")
+                    time.sleep(SIGNAL_INTERVAL)
+                    continue
+
             except Exception as e:
                 print(f"[ERROR_CYCLE] Signal cycle error: {e}")
                 # Don't re-raise - allow loop to continue
