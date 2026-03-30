@@ -781,5 +781,15 @@ except Exception as e:
 threading.Thread(target=signal_thread, daemon=True).start()
 
 # Keep main thread alive
+last_alive_log = datetime.now(timezone.utc)
 while True:
+    # Log "active" every 30 minutes
+    now = datetime.now(timezone.utc)
+    if (now - last_alive_log).total_seconds() >= 1800:  # 1800 seconds = 30 minutes
+        print(f"\n[ALIVE] Bot is active - {now.isoformat()}")
+        show_open_positions()
+        account_summary()
+        print()
+        last_alive_log = now
+
     time.sleep(60)
