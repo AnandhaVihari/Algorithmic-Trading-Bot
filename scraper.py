@@ -24,7 +24,11 @@ FAILURE_TTL_SECONDS = 60  # remove from blacklist after 60 seconds
 
 
 def fetch_proxies_from_api():
-    """Fetch fresh proxies from ProxyScrape API."""
+    """Fetch fresh proxies from ProxyScrape API.
+
+    NOTE: SOCKS4/SOCKS5 proxies are FILTERED OUT - they don't work with requests library.
+    Only HTTP/HTTPS proxies are kept.
+    """
     global _proxy_list, _proxy_last_fetch
 
     try:
@@ -35,15 +39,20 @@ def fetch_proxies_from_api():
 
             if proxies:
                 # Convert to requests-compatible format if needed
+                # FILTER OUT SOCKS4/SOCKS5 - they won't work
                 formatted_proxies = []
                 for proxy in proxies:
+                    # Skip SOCKS proxies (they don't work with requests library)
+                    if proxy.lower().startswith('socks4') or proxy.lower().startswith('socks5'):
+                        continue
+
                     if not proxy.startswith('http'):
                         proxy = f"http://{proxy}"
                     formatted_proxies.append(proxy)
 
                 _proxy_list = formatted_proxies[:10]  # Keep only 10 proxies (top of list)
                 _proxy_last_fetch = time.time()
-                print(f"PROXY: fetched {len(_proxy_list)} proxies from API")
+                print(f"PROXY: fetched {len(_proxy_list)} HTTP/HTTPS proxies from API (SOCKS excluded)")
                 return True
         else:
             print(f"PROXY: API returned status {response.status_code}")
