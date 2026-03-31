@@ -1,0 +1,942 @@
+ Ring Signals
+On 08-Nov-2018 New Version is released please update your app.
+Fixed notification problem.
+Reduce application size.
+Remove Ads.
+Please give us a 5 star rating on the play store.
+How to update?
+From the top left menu, select "Rate this app" and you'll be redirected to the Play Store and then updated.
+ 
+ 
+Symbol	Price	Type	Status
+EURUSD
+15 mins ago
+Open: 1.14668
+TP: 1.14438
+SL : 1.14768
+Sell
+ 0
+ 0
+Active
+USDJPY
+45 mins ago
+Open: 159.735
+TP: 159.965
+SL : 159.635
+Buy
+ 0
+ 0
+Active
+AUDCHF
+1 hour ago
+Open: 0.54788
+TP: 0.55018
+SL : 0.54688
+Buy
+ 0
+ 0
+Active
+EURCHF
+1 hour ago
+Open: 0.91696
+TP: 0.91926
+SL : 0.91596
+Buy
+ 0
+ 0
+Active
+CADCHF
+1 hour ago
+Open: 0.57384
+TP: 0.57614
+SL : 0.57284
+Buy
+ 0
+ 0
+Active
+GBPCHF
+1 hour ago
+Open: 1.05512
+TP: 1.05742
+SL : 1.05412
+Buy
+ 0
+ 0
+Active
+USDCHF
+1 hour ago
+Open: 0.79920
+TP: 0.80150
+SL : 0.79820
+Buy
+ 0
+ 0
+Active
+AUDNZD
+2 hours ago
+Open: 1.19908
+TP: 1.20138
+SL : 1.19808
+Buy
+ 0
+ 0
+Active
+EURAUD
+4 hours ago
+Open: 1.67344
+TP: 1.67574
+SL : 1.67244
+Buy
+ 0
+ 0
+Active
+EURCAD
+6 hours ago
+Open: 1.59761
+TP: 1.59991
+SL : 1.59661
+Buy
+ 0
+ 0
+Active
+AUDCAD
+6 hours ago
+Open: 0.95475
+TP: 0.95705
+SL : 0.95375
+Buy
+ 0
+ 0
+Active
+GBPJPY
+6 hours ago
+Open: 211.070
+TP: 211.300
+SL : 210.970
+Buy
+ 0
+ 0
+Active
+NZDCAD
+6 hours ago
+Open: 0.79682
+TP: 0.79912
+SL : 0.79582
+Buy
+ 0
+ 0
+Active
+CADCHF
+8 hours ago
+Open: 0.57446
+TP: 0.57676
+SL : 0.57346
+Buy
+ 0
+ 0
+Active
+GBPJPY
+8 hours ago
+Open: 210.497
+TP: 210.267
+SL : 210.597
+Sell
+ 0
+ 0
+Active
+AUDCHF
+8 hours ago
+Open: 0.54823
+TP: 0.55053
+SL : 0.54723
+Buy
+ 0
+ 0
+Active
+GBPJPY
+8 hours ago
+Open: 210.632
+TP: 210.862
+SL : 210.532
+Buy
+ 0
+ 0
+Active
+AUDCAD
+9 hours ago
+Open: 0.95477
+TP: 0.95707
+SL : 0.95377
+Buy
+ 0
+ 0
+Active
+AUDJPY
+9 hours ago
+Open: 109.522
+TP: 109.731
+SL : 109.401
+Buy
+ 0
+ 0
+Active
+USDCHF
+12 hours ago
+Open: 0.80010
+TP: 0.80240
+SL : 0.79910
+Buy
+ 0
+ 0
+Active
+USDJPY
+12 hours ago
+Open: 159.634
+TP: 159.864
+SL : 159.534
+Buy
+ 0
+ 0
+Active
+AUDCAD
+1 day ago
+Open: 0.95317
+TP: 0.95087
+SL : 0.95417
+Sell
+ 0
+ 0
+Active
+EURAUD
+1 day ago
+Open: 1.67788
+TP: 1.68018
+SL : 1.67688
+Buy
+ 0
+ 0
+Active
+AUDUSD
+15 mins ago
+Open: 0.68500
+Close: 0.68570
+9mins ago
+TP: 0.68270
+SL : 0.68600
+Sell
+ 0
+ 0
+-70
+Close
+EURUSD
+1 hour ago
+Open: 1.14703
+Close: 1.14674
+26mins ago
+TP: 1.14933
+SL : 1.14603
+Buy
+ 0
+ 0
+-28
+Close
+EURCAD
+1 hour ago
+Open: 1.59837
+Close: 1.59814
+29mins ago
+TP: 1.60067
+SL : 1.59737
+Buy
+ 0
+ 0
+-23
+Close
+GBPJPY
+45 mins ago
+Open: 210.938
+Close: 210.887
+40mins ago
+TP: 211.168
+SL : 210.838
+Buy
+ 0
+ 0
+-50
+Close
+AUDJPY
+45 mins ago
+Open: 109.482
+Close: 109.412
+42mins ago
+TP: 109.712
+SL : 109.382
+Buy
+ 0
+ 0
+-70
+Close
+EURAUD
+1 hour ago
+Open: 1.67380
+Close: 1.67455
+47mins ago
+TP: 1.67610
+SL : 1.67280
+Buy
+ 0
+ 0
++75
+Trailing Stop
+EURCAD
+1 hour ago
+Open: 1.59673
+Close: 1.59734
+1 hour ago
+TP: 1.59443
+SL : 1.59773
+Sell
+ 0
+ 0
+-60
+Close
+NZDCAD
+3 hours ago
+Open: 0.79625
+Close: 0.79544
+1 hour ago
+TP: 0.79395
+SL : 0.79725
+Sell
+ 0
+ 0
++80
+Trailing Stop
+USDJPY
+3 hours ago
+Open: 159.628
+Close: 159.543
+2Hr ago
+TP: 159.398
+SL : 159.728
+Sell
+ 0
+ 0
++85
+Trailing Stop
+CADJPY
+5 hours ago
+Open: 114.694
+Close: 114.531
+2Hr ago
+TP: 114.464
+SL : 114.794
+Sell
+ 0
+ 0
++163
+Trailing Stop
+AUDUSD
+4 hours ago
+Open: 0.68543
+Close: 0.68449
+2Hr ago
+TP: 0.68313
+SL : 0.68643
+Sell
+ 0
+ 0
++93
+Trailing Stop
+AUDCAD
+3 hours ago
+Open: 0.95408
+Close: 0.95353
+2Hr ago
+TP: 0.95178
+SL : 0.95508
+Sell
+ 0
+ 0
++55
+Trailing Stop
+GBPJPY
+3 hours ago
+Open: 210.728
+Close: 210.498
+2Hr ago
+TP: 210.498
+SL : 210.828
+Sell
+ 0
+ 0
++230
+Achieved
+USDJPY
+3 hours ago
+Open: 159.734
+Close: 159.664
+3Hr ago
+TP: 159.964
+SL : 159.634
+Buy
+ 0
+ 0
+-70
+Close
+AUDJPY
+4 hours ago
+Open: 109.455
+Close: 109.399
+3Hr ago
+TP: 109.225
+SL : 109.555
+Sell
+ 0
+ 0
++56
+Trailing Stop
+USDJPY
+5 hours ago
+Open: 159.678
+Close: 159.671
+4Hr ago
+TP: 159.448
+SL : 159.778
+Sell
+ 0
+ 0
++7
+Close
+USDCHF
+8 hours ago
+Open: 0.79990
+Close: 0.79954
+6Hr ago
+TP: 0.80220
+SL : 0.79890
+Buy
+ 0
+ 0
+-36
+Close
+NZDCAD
+7 hours ago
+Open: 0.79569
+Close: 0.79629
+7Hr ago
+TP: 0.79339
+SL : 0.79669
+Sell
+ 0
+ 0
+-59
+Close
+AUDUSD
+8 hours ago
+Open: 0.68458
+Close: 0.68401
+7Hr ago
+TP: 0.68228
+SL : 0.68558
+Sell
+ 0
+ 0
++56
+Trailing Stop
+AUDCAD
+8 hours ago
+Open: 0.95354
+Close: 0.95295
+7Hr ago
+TP: 0.95124
+SL : 0.95454
+Sell
+ 0
+ 0
++59
+Trailing Stop
+EURAUD
+8 hours ago
+Open: 1.67331
+Close: 1.67492
+7Hr ago
+TP: 1.67561
+SL : 1.67231
+Buy
+ 0
+ 0
++161
+Trailing Stop
+AUDNZD
+8 hours ago
+Open: 1.19857
+Close: 1.19787
+8Hr ago
+TP: 1.20087
+SL : 1.19757
+Buy
+ 0
+ 0
+-70
+Close
+Profits: +584 Points
+Given Signals are from 15 minute and 30 minute time frame charts
+
+Copyright @ 2017 Live Forex Signals
+ Ring Signals
+On 08-Nov-2018 New Version is released please update your app.
+Fixed notification problem.
+Reduce application size.
+Remove Ads.
+Please give us a 5 star rating on the play store.
+How to update?
+From the top left menu, select "Rate this app" and you'll be redirected to the Play Store and then updated.
+ 
+ 
+Symbol	Price	Type	Status
+AUDCHF
+45 mins ago
+Open: 0.54814
+TP: 0.55044
+SL : 0.54714
+Buy
+ 0
+ 0
+Active
+USDJPY
+45 mins ago
+Open: 159.735
+TP: 159.965
+SL : 159.635
+Buy
+ 0
+ 0
+Active
+CHFJPY
+1 hour ago
+Open: 199.716
+TP: 199.486
+SL : 199.816
+Sell
+ 0
+ 0
+Active
+EURAUD
+4 hours ago
+Open: 1.67344
+TP: 1.67574
+SL : 1.67244
+Buy
+ 0
+ 0
+Active
+AUDCAD
+6 hours ago
+Open: 0.95475
+TP: 0.95705
+SL : 0.95375
+Buy
+ 0
+ 0
+Active
+EURUSD
+6 hours ago
+Open: 1.14758
+TP: 1.14988
+SL : 1.14658
+Buy
+ 0
+ 0
+Active
+AUDJPY
+6 hours ago
+Open: 109.645
+TP: 109.875
+SL : 109.545
+Buy
+ 0
+ 0
+Active
+EURJPY
+6 hours ago
+Open: 183.474
+TP: 183.704
+SL : 183.374
+Buy
+ 0
+ 0
+Active
+EURNZD
+6 hours ago
+Open: 2.00532
+TP: 2.00762
+SL : 2.00432
+Buy
+ 0
+ 0
+Active
+AUDNZD
+6 hours ago
+Open: 1.19842
+TP: 1.20072
+SL : 1.19742
+Buy
+ 0
+ 0
+Active
+NZDCAD
+6 hours ago
+Open: 0.79682
+TP: 0.79912
+SL : 0.79582
+Buy
+ 0
+ 0
+Active
+CADJPY
+8 hours ago
+Open: 114.759
+TP: 114.989
+SL : 114.659
+Buy
+ 0
+ 0
+Active
+AUDCAD
+8 hours ago
+Open: 0.95453
+TP: 0.95683
+SL : 0.95353
+Buy
+ 0
+ 0
+Active
+NZDJPY
+8 hours ago
+Open: 91.400
+TP: 91.630
+SL : 91.300
+Buy
+ 0
+ 0
+Active
+AUDJPY
+8 hours ago
+Open: 109.534
+TP: 109.764
+SL : 109.434
+Buy
+ 0
+ 0
+Active
+USDJPY
+11 hours ago
+Open: 159.704
+TP: 159.934
+SL : 159.604
+Buy
+ 0
+ 0
+Active
+AUDCAD
+1 day ago
+Open: 0.95317
+TP: 0.95087
+SL : 0.95417
+Sell
+ 0
+ 0
+Active
+EURUSD
+45 mins ago
+Open: 1.14728
+Close: 1.14672
+26mins ago
+TP: 1.14958
+SL : 1.14628
+Buy
+ 0
+ 0
+-55
+Close
+EURAUD
+45 mins ago
+Open: 1.67398
+Close: 1.67508
+31mins ago
+TP: 1.67628
+SL : 1.67298
+Buy
+ 0
+ 0
++110
+Trailing Stop
+EURJPY
+45 mins ago
+Open: 183.251
+Close: 183.192
+35mins ago
+TP: 183.481
+SL : 183.151
+Buy
+ 0
+ 0
+-58
+Close
+AUDCAD
+45 mins ago
+Open: 0.95506
+Close: 0.95436
+36mins ago
+TP: 0.95736
+SL : 0.95406
+Buy
+ 0
+ 0
+-70
+Close
+AUDJPY
+45 mins ago
+Open: 109.482
+Close: 109.412
+42mins ago
+TP: 109.712
+SL : 109.382
+Buy
+ 0
+ 0
+-70
+Close
+EURUSD
+3 hours ago
+Open: 1.14697
+Close: 1.14688
+1 hour ago
+TP: 1.14467
+SL : 1.14797
+Sell
+ 0
+ 0
++9
+Close
+NZDCAD
+3 hours ago
+Open: 0.79625
+Close: 0.79544
+1 hour ago
+TP: 0.79395
+SL : 0.79725
+Sell
+ 0
+ 0
++80
+Trailing Stop
+USDJPY
+2 hours ago
+Open: 159.622
+Close: 159.543
+2Hr ago
+TP: 159.392
+SL : 159.722
+Sell
+ 0
+ 0
++79
+Trailing Stop
+CADJPY
+4 hours ago
+Open: 114.616
+Close: 114.531
+2Hr ago
+TP: 114.386
+SL : 114.716
+Sell
+ 0
+ 0
++85
+Trailing Stop
+AUDUSD
+3 hours ago
+Open: 0.68490
+Close: 0.68469
+2Hr ago
+TP: 0.68260
+SL : 0.68590
+Sell
+ 0
+ 0
++21
+Close
+AUDCAD
+3 hours ago
+Open: 0.95408
+Close: 0.95353
+2Hr ago
+TP: 0.95178
+SL : 0.95508
+Sell
+ 0
+ 0
++55
+Trailing Stop
+EURJPY
+4 hours ago
+Open: 183.160
+Close: 182.930
+2Hr ago
+TP: 182.930
+SL : 183.260
+Sell
+ 0
+ 0
++230
+Achieved
+NZDJPY
+4 hours ago
+Open: 91.340
+Close: 91.110
+2Hr ago
+TP: 91.110
+SL : 91.440
+Sell
+ 0
+ 0
++230
+Achieved
+AUDJPY
+4 hours ago
+Open: 109.455
+Close: 109.399
+3Hr ago
+TP: 109.225
+SL : 109.555
+Sell
+ 0
+ 0
++56
+Trailing Stop
+EURNZD
+4 hours ago
+Open: 2.00535
+Close: 2.00630
+3Hr ago
+TP: 2.00765
+SL : 2.00435
+Buy
+ 0
+ 0
++94
+Trailing Stop
+GBPAUD
+4 hours ago
+Open: 1.92621
+Close: 1.92703
+4Hr ago
+TP: 1.92851
+SL : 1.92521
+Buy
+ 0
+ 0
++81
+Trailing Stop
+AUDNZD
+7 hours ago
+Open: 1.19741
+Close: 1.19809
+6Hr ago
+TP: 1.19511
+SL : 1.19841
+Sell
+ 0
+ 0
+-68
+Close
+AUDCHF
+12 hours ago
+Open: 0.54805
+Close: 0.54744
+7Hr ago
+TP: 0.54575
+SL : 0.54905
+Sell
+ 0
+ 0
++60
+Trailing Stop
+NZDCAD
+7 hours ago
+Open: 0.79620
+Close: 0.79601
+7Hr ago
+TP: 0.79390
+SL : 0.79720
+Sell
+ 0
+ 0
++19
+Close
+AUDCAD
+7 hours ago
+Open: 0.95341
+Close: 0.95315
+7Hr ago
+TP: 0.95111
+SL : 0.95441
+Sell
+ 0
+ 0
++25
+Close
+AUDJPY
+7 hours ago
+Open: 109.418
+Close: 109.333
+7Hr ago
+TP: 109.188
+SL : 109.518
+Sell
+ 0
+ 0
++85
+Trailing Stop
+EURAUD
+7 hours ago
+Open: 1.67374
+Close: 1.67492
+7Hr ago
+TP: 1.67604
+SL : 1.67274
+Buy
+ 0
+ 0
++118
+Trailing Stop
+CADCHF
+13 hours ago
+Open: 0.57505
+Close: 0.57435
+10Hr ago
+TP: 0.57735
+SL : 0.57405
+Buy
+ 0
+ 0
+-70
+Close
+EURNZD
+16 hours ago
+Open: 2.00547
+Close: 2.00527
+16Hr ago
+TP: 2.00317
+SL : 2.00647
+Sell
+ 0
+ 0
++20
+Close
+Profits: +1066 Points
+Given Signals are from 1 hour and 4 hour time frame charts
+
+Copyright @ 2017 Live Forex Signals

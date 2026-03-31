@@ -271,7 +271,7 @@ def run_signal_cycle():
     active_signals = [s for s in signals if s.status == "ACTIVE"]
     close_signals = [s for s in signals if s.status == "CLOSE"]
 
-    print(f"  Active: {len(active_signals)}, Close: {len(close_signals)}")
+    print(f"  Active: {len(active_signals)}, Close (→Active): {len(close_signals)}")
 
     # ──── FILTER BY AGE: Only open NEW trades from fresh signals (<30 min)
     # Position management keeps ALL active signals to avoid closing active trades
@@ -293,9 +293,10 @@ def run_signal_cycle():
             if not is_signal_in_overlap(sig.time):
                 print(f"    [SESSION_SKIP] {sig.pair} {sig.side} created at {sig.time.strftime('%H:%M UTC')} (outside overlap)")
 
-    # For position management, use ALL active signals (no age filter)
-    # This keeps trades open as long as signal is active on website
-    all_active_signals = active_signals
+    # For position management, use ALL active + CLOSE signals (no age filter)
+    # IMPORTANT: Treat CLOSE signals as ACTIVE to prevent diff-based closing
+    # This allows trailing stop to continue managing positions instead of force-closing
+    all_active_signals = active_signals + close_signals
 
     # ──── DEDUPLICATE: Keep most recent per key ──────────────────────────────
 
@@ -609,13 +610,12 @@ def run_signal_cycle():
     if open_count > 0 or close_count > 0:
         save_processed_signals(processed_signal_ids)
 
-    # ──── PROCESS CLOSE SIGNALS (Informational) ───────────────────────────────
+    # ──── PROCESS CLOSE SIGNALS (Treated as ACTIVE for trailing stop management) ──
 
     if close_signals:
-        print(f"\n[CLOSE_SIGNALS] Found {len(close_signals)} close signal(s) on website")
+        print(f"\n[CLOSE_SIGNALS] Found {len(close_signals)} close signal(s) on website (→ kept as ACTIVE for trailing TP)")
         for sig in close_signals:
-            print(f"  {sig.pair} {sig.side} @ close {sig.close_price} ({sig.close_reason})")
-            # These are FYI only - the counter diff already handled closing
+            print(f"  {sig.pair} {sig.side} @ {sig.entry} (will be managed by trailing stop, not closed immediately)")
 
     # ──── STATUS ─────────────────────────────────────────────────────────────
 
