@@ -289,10 +289,9 @@ def run_signal_cycle():
             if not is_signal_in_overlap(sig.time):
                 print(f"    [SESSION_SKIP] {sig.pair} {sig.side} created at {sig.time.strftime('%H:%M UTC')} (outside overlap)")
 
-    # For position management, use ALL active + CLOSE signals (no age filter)
-    # IMPORTANT: Treat CLOSE signals as ACTIVE to prevent diff-based closing
-    # This allows trailing stop to continue managing positions instead of force-closing
-    all_active_signals = active_signals + close_signals
+    # For position management, use only ACTIVE signals (no age filter)
+    # CLOSE signals are handled immediately and removed from diff calculation
+    all_active_signals = active_signals
 
     # ──── DEDUPLICATE: Keep most recent per key ──────────────────────────────
 
@@ -561,12 +560,50 @@ def run_signal_cycle():
     if open_count > 0 or close_count > 0:
         save_processed_signals(processed_signal_ids)
 
-    # ──── PROCESS CLOSE SIGNALS (Treated as ACTIVE for trailing stop management) ──
+    # ──── PROCESS CLOSE SIGNALS (Immediate close) ─────────────────────────────────
 
     if close_signals:
-        print(f"\n[CLOSE_SIGNALS] Found {len(close_signals)} close signal(s) on website (→ kept as ACTIVE for trailing TP)")
+        print(f"\n[CLOSE_SIGNALS] Found {len(close_signals)} close signal(s) on website - closing positions")
+        close_count_from_signals = 0
+
         for sig in close_signals:
-            print(f"  {sig.pair} {sig.side} @ {sig.entry} (will be managed by trailing stop, not closed immediately)")
+            print(f"  {sig.pair} {sig.side} @ {sig.entry} - searching for matching positions to close")
+
+            # Find all positions matching this pair and side (regardless of TP/SL)
+            matched_keys = []
+            for key in positions.positions.keys():
+                key_pair, key_side = key[0], key[1]
+                if key_pair == sig.pair and key_side == sig.side:
+                    matched_keys.append(key)
+
+            if not matched_keys:
+                print(f"    No open positions found for {sig.pair} {sig.side}")
+                continue
+
+            # Close all tickets for matching keys
+            for key in matched_keys:
+                tickets = positions.positions.get(key, [])
+                print(f"    Closing {len(tickets)} ticket(s) for key {key}")
+
+                for ticket in tickets[:]:  # Iterate over copy
+                    try:
+                        if close_position_by_ticket(ticket, sig.pair):
+                            positions.remove_ticket(ticket)
+                            try:
+                                trailing_stop_mgr.remove_position(ticket)
+                            except:
+                                pass
+                            close_count_from_signals += 1
+                            log(LogLevel.INFO, f"Website CLOSE signal: Closed T{ticket} {sig.pair} {sig.side}")
+                            print(f"      [SUCCESS] Closed T{ticket}")
+                        else:
+                            print(f"      [FAILED] Could not close T{ticket}")
+                    except Exception as e:
+                        print(f"      [ERROR] Exception closing T{ticket}: {e}")
+
+        close_count += close_count_from_signals
+        if close_count_from_signals > 0:
+            print(f"  Total closed from website signals: {close_count_from_signals}")
 
     # ──── STATUS ─────────────────────────────────────────────────────────────
 
