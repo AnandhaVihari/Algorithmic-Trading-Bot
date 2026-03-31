@@ -68,8 +68,8 @@ def load_processed_signals():
     try:
         with open(processed_signals_file, 'r') as f:
             data = json.load(f)
-        # Keep signals from last 2 hours (age filter is 30 min, so 2h is safe buffer)
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+        # Keep signals from last 24 hours
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         filtered = {
             ts: v for ts, v in data.items()
             if datetime.fromisoformat(v) > cutoff
@@ -104,44 +104,6 @@ def save_processed_signals(signal_set):
             raise
     except Exception as e:
         print(f"[ERROR_JSON] Failed to save processed_signals: {e}, changes may be lost")
-
-
-def cleanup_old_processed_signals(max_age_hours=2):
-    """Remove signals older than max_age_hours from processed_signals.json.
-
-    Runs after each signal cycle to keep file size manageable.
-    Prevents bloat from signal accumulation (real data showed 110+ stale signals).
-
-    Args:
-        max_age_hours: Keep only signals newer than this (default 2 hours).
-                      Age filter is 30 min, so 2h buffer is safe for deduplication.
-    """
-    try:
-        processed = load_processed_signals()
-        if not processed:
-            return
-
-        now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(hours=max_age_hours)
-
-        cleaned = set()
-        for sig_id in processed:
-            try:
-                # sig_id format: "2026-03-30T15:30:00+00:00_('PAIR', 'SIDE', entry, tp)"
-                time_str = sig_id.split("_")[0]
-                sig_time = datetime.fromisoformat(time_str)
-                if sig_time > cutoff:
-                    cleaned.add(sig_id)
-            except:
-                # Invalid format, keep it
-                cleaned.add(sig_id)
-
-        if len(cleaned) < len(processed):
-            removed = len(processed) - len(cleaned)
-            save_processed_signals(cleaned)
-            print(f"[CLEANUP] Purged {removed} stale signals, kept {len(cleaned)} fresh signals")
-    except Exception as e:
-        print(f"[ERROR] Cleanup failed: {e}")
 
 
 def get_signal_id(sig: Signal) -> str:
@@ -646,10 +608,6 @@ def run_signal_cycle():
 
     if open_count > 0 or close_count > 0:
         save_processed_signals(processed_signal_ids)
-
-    # ──── CLEANUP STALE SIGNALS ───────────────────────────────────────────────
-    # Prevent processed_signals.json from growing indefinitely
-    cleanup_old_processed_signals(max_age_hours=2)
 
     # ──── PROCESS CLOSE SIGNALS (Informational) ───────────────────────────────
 
