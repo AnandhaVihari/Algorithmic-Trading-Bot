@@ -31,7 +31,6 @@ from signal_manager import (
     Signal, SignalKey, PositionStore, StateDifferencer, SignalFilter, SafeExecutor, FuzzyMatcher
 )
 from operational_safety import OperationalSafety, log, LogLevel
-from virtual_sl import init_virtual_sl, get_virtual_sl_manager
 from trailing_stop import init_trailing_stop
 from session_filter import is_london_ny_overlap, session_status_string, is_signal_in_overlap, filter_signals_by_session
 from config import SIGNAL_INTERVAL, TRADE_VOLUME, MAX_SIGNAL_AGE
@@ -51,9 +50,6 @@ positions = PositionStore()
 safety = OperationalSafety(max_retries=5, unmatched_threshold=3)
 
 # Virtual SL - Spread-aware stop loss management
-# spread_factor: 1.5-2.0 (higher = more protection from spread spikes)
-# cooldown_seconds: 300 (5 min cooldown to prevent reopen loop after VSL close)
-virtual_sl = init_virtual_sl(spread_factor=1.5, cooldown_seconds=300)
 
 # Trailing Stop - Phase-based SL management (passive layer)
 trailing_stop_mgr = init_trailing_stop()
@@ -386,19 +382,6 @@ def run_signal_cycle():
             print(f"\n  [INFO] Keys in curr but NOT in prev (NEW): {missing_from_prev}")
 
 
-    # ──── VIRTUAL SL CHECK (DISABLED) ────────────────────────────────────────────
-    # VSL disabled: Positions only close via trailing stop or portfolio close logic
-    # All stop loss management handled purely by trailing_stop.py
-
-    virtual_sl_closes = []  # No VSL closes - trailing stop only
-    print(f"  [VSL] DISABLED - Position protection via trailing stop only")
-
-    # VSL disabled - no positions closed by virtual SL
-
-    # ──── CLEANUP CLOSED_BY_BOT FOR REAPPEARED SIGNALS (DISABLED) ─────────────────
-    # VSL disabled - no need to track closed_by_bot signals
-    # virtual_sl.cleanup_closed_signals(curr_keys)
-
     # ──── TRAILING STOP UPDATE (PASSIVE LAYER) ──────────────────────────────────
     # Update trailing stops for all tracked positions (SL adjustments only)
     # FIX 2: FAIL-FAST - Crash if trailing stop fails (no silent errors)
@@ -449,7 +432,6 @@ def run_signal_cycle():
             # STALE DETECTION: Check if ticket was manually closed in MT5
             if safety.check_stale_tickets(ticket, mt5_positions):
                 positions.remove_ticket(ticket)
-                virtual_sl.remove_position(ticket)  # Clean up VSL tracking
                 try:
                     trailing_stop_mgr.remove_position(ticket)
                     print(f"  [TRAIL] Removed T{ticket} (stale detect)")
@@ -463,7 +445,6 @@ def run_signal_cycle():
                 if close_position_by_ticket(ticket, key[0]):
                     # Success - NOW remove ticket from tracking
                     positions.remove_ticket(ticket)
-                    virtual_sl.remove_position(ticket)  # Remove from virtual SL tracking
                     # Remove from trailing stop tracking (position is now closed)
                     try:
                         trailing_stop_mgr.remove_position(ticket)
@@ -484,7 +465,6 @@ def run_signal_cycle():
                         failed_key = ("_FAILED_CLOSE_", key[0], key[2], key[3])
                         positions.remove_ticket(ticket)
                         positions.add_ticket(failed_key, ticket)
-                        virtual_sl.remove_position(ticket)  # Stop monitoring virtual SL
                         # Remove from trailing stop (position will not be retried)
                         try:
                             trailing_stop_mgr.remove_position(ticket)
@@ -503,7 +483,6 @@ def run_signal_cycle():
                     failed_key = ("_FAILED_CLOSE_", key[0], key[2], key[3])
                     positions.remove_ticket(ticket)
                     positions.add_ticket(failed_key, ticket)
-                    virtual_sl.remove_position(ticket)  # Stop monitoring virtual SL
                     # Remove from trailing stop (position will not be retried)
                     try:
                         trailing_stop_mgr.remove_position(ticket)
@@ -523,9 +502,6 @@ def run_signal_cycle():
 
         for key, count in opened.items():
             pair, side, tp, sl = key
-
-            # VSL reopen prevention disabled (no VSL)
-            # Signals can reopen immediately without VSL lifecycle check
 
             # Find matching signal from FRESH signals only
             # Only open signals that passed the age filter (< 30 min)
@@ -555,16 +531,6 @@ def run_signal_cycle():
 
                     if success and ticket:
                         positions.add_ticket(key, ticket)
-
-                        # Register with virtual SL for spread-aware monitoring
-                        virtual_sl.add_position(
-                            ticket=ticket,
-                            pair=sig.pair,
-                            side=sig.side,
-                            original_sl=sig.sl,
-                            tp=sig.tp,
-                            entry_price=sig.open_price
-                        )
 
                         # Register with trailing stop for SL management
                         try:
@@ -620,12 +586,6 @@ def run_signal_cycle():
 
     log(LogLevel.INFO, f"Cycle complete: {open_count} opened, {close_count} closed, {escalated_count} escalated")
     log(LogLevel.INFO, f"Tracked: {total_tickets} tickets | UNMATCHED: {unmatched_count} | FAILED_CLOSE: {failed_close_count}")
-
-    # Log virtual SL status
-    monitored_count = len(virtual_sl.metadata)
-    closed_by_bot_count = len(virtual_sl.closed_by_bot)
-    if monitored_count > 0 or closed_by_bot_count > 0:
-        log(LogLevel.DEBUG, f"Virtual SL: monitoring {monitored_count} tickets, {closed_by_bot_count} in closed_by_bot")
 
     # Monitor UNMATCHED growth
     safety.check_unmatched_growth(unmatched_count)
