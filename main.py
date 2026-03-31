@@ -386,30 +386,18 @@ def run_signal_cycle():
             print(f"\n  [INFO] Keys in curr but NOT in prev (NEW): {missing_from_prev}")
 
 
-    # ──── VIRTUAL SL CHECK (SPREAD-AWARE) ─────────────────────────────────────
-    # Check and close positions that hit virtual SL (accounts for spread changes)
+    # ──── VIRTUAL SL CHECK (DISABLED) ────────────────────────────────────────────
+    # VSL disabled: Positions only close via trailing stop or portfolio close logic
+    # All stop loss management handled purely by trailing_stop.py
 
-    mt5_positions = mt5.positions_get() or []
-    print(f"  [TRIGGER] VSL_CHECK_START")
-    virtual_sl_closes = virtual_sl.check_and_close_all(
-        mt5, positions, lambda t, p: close_position_by_ticket(t, p)
-    )
-    print(f"  [TRIGGER] VSL_CHECK_END - closed {len(virtual_sl_closes or [])}")
+    virtual_sl_closes = []  # No VSL closes - trailing stop only
+    print(f"  [VSL] DISABLED - Position protection via trailing stop only")
 
-    if virtual_sl_closes:
-        log(LogLevel.INFO, f"Virtual SL closed {len(virtual_sl_closes)} position(s)")
-        for ticket, key, reason in virtual_sl_closes:
-            log(LogLevel.DEBUG, f"  {reason}")
-            # Remove from trailing stop tracking (position is now closed)
-            try:
-                trailing_stop_mgr.remove_position(ticket)
-                print(f"  [TRAIL] Removed T{ticket} (VSL close)")
-            except Exception as e:
-                log(LogLevel.DEBUG, f"Trailing stop remove failed for T{ticket}: {e}")
+    # VSL disabled - no positions closed by virtual SL
 
-    # ──── CLEANUP CLOSED_BY_BOT FOR REAPPEARED SIGNALS ──────────────────────────
-    # If signal reappears after being closed by virtual SL, allow reopen
-    virtual_sl.cleanup_closed_signals(curr_keys)
+    # ──── CLEANUP CLOSED_BY_BOT FOR REAPPEARED SIGNALS (DISABLED) ─────────────────
+    # VSL disabled - no need to track closed_by_bot signals
+    # virtual_sl.cleanup_closed_signals(curr_keys)
 
     # ──── TRAILING STOP UPDATE (PASSIVE LAYER) ──────────────────────────────────
     # Update trailing stops for all tracked positions (SL adjustments only)
@@ -536,11 +524,8 @@ def run_signal_cycle():
         for key, count in opened.items():
             pair, side, tp, sl = key
 
-            # CRITICAL: Skip if this position was recently closed by virtual SL
-            # Prevent immediate reopen after bot-triggered close
-            if virtual_sl.is_closed_by_bot(key):
-                log(LogLevel.INFO, f"Skipping {key} - recently closed by virtual SL, waiting for signal reset")
-                continue
+            # VSL reopen prevention disabled (no VSL)
+            # Signals can reopen immediately without VSL lifecycle check
 
             # Find matching signal from FRESH signals only
             # Only open signals that passed the age filter (< 30 min)
